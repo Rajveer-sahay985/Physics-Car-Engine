@@ -1,0 +1,15 @@
+# Build outputs
+bin/
+*.o
+*.out
+
+# executables
+game
+vortex
+vortex_engine
+
+# VS Code
+.vscode/
+
+# macOS
+.DS_Store
