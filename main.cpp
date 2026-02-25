@@ -2,6 +2,9 @@
 #include <cmath>
 #include <vector>
 #include <algorithm>
+#include <fstream>
+#include <sstream>
+#include <string>
 
 // ==========================================
 // 1. DATA STRUCTURES
@@ -117,90 +120,63 @@ void CreateSpring(std::vector<Spring>& springs, Particle& p1, Particle& p2, floa
     springs.push_back({&p1, &p2, dist, stiffness, 0.1f});
 }
 
-// Loads the OBJ, welds duplicate vertices, and generates internal volume springs
+
+// Bypasses Raylib's visual loader and reads the raw OBJ text file directly.
 void LoadMeshIntoPhysics(const char* fileName, std::vector<Particle>& particles, std::vector<Spring>& springs, std::vector<int>& indices, float stiffness, Vector3 spawnOffset) {
-    Model model = LoadModel(fileName);
-    if (model.meshes == NULL || model.meshCount == 0) {
-        return; 
+    std::ifstream file(fileName);
+    if (!file.is_open()) {
+        DrawText("Failed to open OBJ file!", 10, 50, 20, RED);
+        return;
     }
 
-    Mesh mesh = model.meshes[0]; 
+    std::string line;
+    while (std::getline(file, line)) {
+        std::istringstream iss(line);
+        std::string prefix;
+        iss >> prefix;
 
-    // --- 1. THE WELDER (Extract Unique Vertices) ---
-    // We keep a map to translate Blender's bloated vertex list to our optimized, welded physics list
-    std::vector<int> originalToUniqueMap(mesh.vertexCount);
-
-    for (int i = 0; i < mesh.vertexCount; i++) {
-        Vector3 pos = {
-            mesh.vertices[i * 3] + spawnOffset.x,
-            mesh.vertices[i * 3 + 1] + spawnOffset.y,
-            mesh.vertices[i * 3 + 2] + spawnOffset.z
-        };
-
-        // Check if a particle already exists at this exact spot (welding distance: 0.001)
-        int existingIndex = -1;
-        for (size_t j = 0; j < particles.size(); j++) {
-            if (Vector3Distance(particles[j].position, pos) < 0.001f) {
-                existingIndex = j;
-                break;
-            }
-        }
-
-        if (existingIndex == -1) {
-            // It's a brand new corner. Add it to our physics engine.
+        if (prefix == "v") {
+            // It's a Vertex! Add it to our particles array.
+            Vector3 pos;
+            iss >> pos.x >> pos.y >> pos.z;
+            pos.x += spawnOffset.x;
+            pos.y += spawnOffset.y;
+            pos.z += spawnOffset.z;
             particles.push_back({pos, pos, {0.0f, 0.0f, 0.0f}, 1.0f});
-            originalToUniqueMap[i] = particles.size() - 1;
-        } else {
-            // Duplicate found! Weld it to the existing particle.
-            originalToUniqueMap[i] = existingIndex;
-        }
-    }
-
-    // --- 2. THE SHELL (Extract Triangles using our Welded Vertices) ---
-    if (mesh.indices != NULL) {
-        for (int i = 0; i < mesh.triangleCount; i++) {
-            // Grab the indices, but run them through our map so they share the welded corners
-            int idx1 = originalToUniqueMap[mesh.indices[i * 3]];
-            int idx2 = originalToUniqueMap[mesh.indices[i * 3 + 1]];
-            int idx3 = originalToUniqueMap[mesh.indices[i * 3 + 2]];
-
-            indices.push_back(idx1); indices.push_back(idx2); indices.push_back(idx3);
-
-            CreateSpring(springs, particles[idx1], particles[idx2], stiffness);
-            CreateSpring(springs, particles[idx2], particles[idx3], stiffness);
-            CreateSpring(springs, particles[idx3], particles[idx1], stiffness);
-        }
-    } else {
-        // Handle unrolled meshes using the same welded map
-        for (int i = 0; i < mesh.vertexCount; i += 3) {
-            int idx1 = originalToUniqueMap[i];
-            int idx2 = originalToUniqueMap[i + 1];
-            int idx3 = originalToUniqueMap[i + 2];
-
-            indices.push_back(idx1); indices.push_back(idx2); indices.push_back(idx3);
-
-            CreateSpring(springs, particles[idx1], particles[idx2], stiffness);
-            CreateSpring(springs, particles[idx2], particles[idx3], stiffness);
-            CreateSpring(springs, particles[idx3], particles[idx1], stiffness);
-        }
-    }
-
-    // --- 3. THE BRACER (Generate Internal Structure) ---
-    // Connect particles across the inside of the shape so it doesn't fold flat
-    for (size_t i = 0; i < particles.size(); i++) {
-        for (size_t j = i + 1; j < particles.size(); j++) {
-            float dist = Vector3Distance(particles[i].position, particles[j].position);
-            // If they are within a certain distance, shoot a structural spring between them
-            // We use 5.0f here assuming your cuboid isn't massive. 
-            if (dist > 0.1f && dist < 5.0f) {
-                // We make internal springs slightly softer so the outside shell takes the impact
-                CreateSpring(springs, particles[i], particles[j], stiffness * 0.8f); 
+        } 
+        else if (prefix == "f") {
+            // It's a Face! Connect the vertices with springs.
+            int v[3];
+            for (int i = 0; i < 3; i++) {
+                std::string vertexData;
+                iss >> vertexData;
+                
+                // OBJ faces often look like "1/1/1". We only want the first number (the vertex index).
+                std::stringstream vStream(vertexData.substr(0, vertexData.find('/')));
+                vStream >> v[i];
+                
+                // OBJ files start counting at 1, but C++ vectors start at 0. So we subtract 1.
+                v[i] -= 1; 
             }
+
+            // Save for the visual renderer
+            indices.push_back(v[0]);
+            indices.push_back(v[1]);
+            indices.push_back(v[2]);
+
+            // Build the structural springs to hold the face together
+            CreateSpring(springs, particles[v[0]], particles[v[1]], stiffness);
+            CreateSpring(springs, particles[v[1]], particles[v[2]], stiffness);
+            CreateSpring(springs, particles[v[2]], particles[v[0]], stiffness);
         }
     }
-
-    UnloadModel(model); 
+    file.close();
 }
+
+
+
+
+
 
 
 // ==========================================
