@@ -29,7 +29,6 @@ float Distance(Vector3 v1, Vector3 v2) {
     return std::sqrt(d.x*d.x + d.y*d.y + d.z*d.z);
 }
 
-// Rotates a vector around the Y axis (Used for steering the front wheels)
 Vector3 RotateY(Vector3 v, float angle) {
     float c = std::cos(angle);
     float s = std::sin(angle);
@@ -44,7 +43,7 @@ struct Particle {
     Vector3 previous_position;
     Vector3 acceleration;
     float mass;
-    bool isWheel; // Flags if this particle is a tire
+    bool isWheel;
 };
 
 struct Spring {
@@ -53,13 +52,19 @@ struct Spring {
     float rest_length;
     float stiffness;
     float damping; 
-    bool isSuspension; // Suspension springs don't permanently crumple
+    bool isSuspension; 
 };
 
 struct VisualVertex {
     Vector3 position;
     int boundParticleIndex; 
     Vector3 offset;         
+};
+
+struct Obstacle {
+    Vector3 minBounds;
+    Vector3 maxBounds;
+    Color color;
 };
 
 int pFront = 0, pBack = 0, pTop = 0; 
@@ -70,7 +75,6 @@ int pFront = 0, pBack = 0, pTop = 0;
 void UpdateParticle(Particle& p, float deltaTime) {
     Vector3 velocity = Subtract(p.position, p.previous_position);
     
-    // Air resistance/baseline friction
     float friction = 0.99f; 
     velocity = Scale(velocity, friction);
 
@@ -81,7 +85,6 @@ void UpdateParticle(Particle& p, float deltaTime) {
     p.acceleration = {0.0f, 0.0f, 0.0f};
 }
 
-// Kills sideways velocity so the tires grip the road instead of sliding like ice
 void ApplyTireFriction(Particle& wheel, Vector3 heading, float grip) {
     Vector3 vel = Subtract(wheel.position, wheel.previous_position);
     
@@ -89,10 +92,8 @@ void ApplyTireFriction(Particle& wheel, Vector3 heading, float grip) {
     Vector3 forwardVel = Scale(heading, forwardSpeed);
     Vector3 lateralVel = Subtract(vel, forwardVel);
     
-    // Reduce lateral velocity based on grip (0.0 = ice, 1.0 = rails)
     lateralVel = Scale(lateralVel, 1.0f - grip);
     
-    // Reconstruct the new velocity and update the previous position to enforce it
     Vector3 newVel = Add(forwardVel, lateralVel);
     wheel.previous_position = Subtract(wheel.position, newVel);
 }
@@ -104,7 +105,6 @@ void ApplySpringForce(Spring& spring, float deltaTime) {
     Vector3 dir = Normalize(Subtract(spring.p2->position, spring.p1->position));
     float displacement = current_distance - spring.rest_length;
 
-    // Plastic Deformation (Only apply to the chassis cage, NOT the suspension)
     if (!spring.isSuspension) {
         float yield_point = 0.4f; 
         if (std::abs(displacement) > yield_point) {
@@ -126,6 +126,29 @@ void ApplySpringForce(Spring& spring, float deltaTime) {
     spring.p2->acceleration = Subtract(spring.p2->acceleration, Scale(dir, acc2));
 }
 
+void HandleObstacleCollision(Particle& p, const Obstacle& obs) {
+    if (p.position.x > obs.minBounds.x && p.position.x < obs.maxBounds.x &&
+        p.position.y > obs.minBounds.y && p.position.y < obs.maxBounds.y &&
+        p.position.z > obs.minBounds.z && p.position.z < obs.maxBounds.z) {
+        
+        float distToMinX = p.position.x - obs.minBounds.x;
+        float distToMaxX = obs.maxBounds.x - p.position.x;
+        float distToMinY = p.position.y - obs.minBounds.y;
+        float distToMaxY = obs.maxBounds.y - p.position.y;
+        float distToMinZ = p.position.z - obs.minBounds.z;
+        float distToMaxZ = obs.maxBounds.z - p.position.z;
+
+        float minDist = std::min({distToMinX, distToMaxX, distToMinY, distToMaxY, distToMinZ, distToMaxZ});
+
+        if (minDist == distToMinX) { p.position.x = obs.minBounds.x; p.previous_position.x = p.position.x; }
+        else if (minDist == distToMaxX) { p.position.x = obs.maxBounds.x; p.previous_position.x = p.position.x; }
+        else if (minDist == distToMinY) { p.position.y = obs.minBounds.y; p.previous_position.y = p.position.y; }
+        else if (minDist == distToMaxY) { p.position.y = obs.maxBounds.y; p.previous_position.y = p.position.y; }
+        else if (minDist == distToMinZ) { p.position.z = obs.minBounds.z; p.previous_position.z = p.position.z; }
+        else if (minDist == distToMaxZ) { p.position.z = obs.maxBounds.z; p.previous_position.z = p.position.z; }
+    }
+}
+
 // ==========================================
 // 4. LOADERS & BINDING
 // ==========================================
@@ -143,18 +166,16 @@ void LoadPhysicsCage(const char* fileName, std::vector<Particle>& particles, std
         if (prefix == "v") {
             Vector3 pos; iss >> pos.x >> pos.y >> pos.z;
             pos = Add(pos, spawnOffset);
-            // Chassis particles have standard mass
             particles.push_back({pos, pos, {0,0,0}, 1.0f, false}); 
         }
     }
     for (size_t i = 0; i < particles.size(); i++) {
         for (size_t j = i + 1; j < particles.size(); j++) {
-            CreateSpring(springs, particles[i], particles[j], stiffness, 3.0f, false);
+            CreateSpring(springs, particles[i], particles[j], stiffness, 4.0f, false);
         }
     }
 }
 
-// Loads the 4 wheel vertices and builds the suspension
 void LoadWheelsAndSuspension(const char* fileName, std::vector<Particle>& wheels, std::vector<Particle>& cage, std::vector<Spring>& springs, Vector3 spawnOffset) {
     std::ifstream file(fileName);
     if (!file.is_open()) return;
@@ -165,14 +186,13 @@ void LoadWheelsAndSuspension(const char* fileName, std::vector<Particle>& wheels
         if (prefix == "v") {
             Vector3 pos; iss >> pos.x >> pos.y >> pos.z;
             pos = Add(pos, spawnOffset);
-            // Wheels are heavy (mass 3.0) to keep the car grounded
-            wheels.push_back({pos, pos, {0,0,0}, 3.0f, true}); 
+            wheels.push_back({pos, pos, {0,0,0}, 4.0f, true}); // Heavy tires
         }
     }
     
-    // Build Suspension: Connect each wheel to the 4 nearest cage points
-    float suspStiffness = 800.0f;
-    float suspDamping = 15.0f;
+    // TIGHTENED SUSPENSION: Fixes the bungee cord effect
+    float suspStiffness = 3500.0f;
+    float suspDamping = 80.0f;
     for (auto& w : wheels) {
         std::vector<std::pair<float, int>> dists;
         for (size_t i = 0; i < cage.size(); i++) {
@@ -244,7 +264,7 @@ void BindSkinToCage(std::vector<VisualVertex>& visualVertices, const std::vector
 // 5. MAIN ENGINE LOOP
 // ==========================================
 int main() {
-    InitWindow(1024, 768, "Vortex Engine V2.0 - Drivetrain & Suspension");
+    InitWindow(1024, 768, "Vortex Engine V2.1 - High Torque & Upright Tires");
     SetTargetFPS(60);
 
     Camera3D camera = { 0 };
@@ -256,42 +276,42 @@ int main() {
 
     std::vector<Particle> cageParticles;
     std::vector<Particle> wheels;
-    std::vector<Spring> allSprings; // Holds both cage structure AND suspension
+    std::vector<Spring> allSprings; 
     
     std::vector<VisualVertex> carSkin;
     std::vector<int> carIndices;
 
-    // Spawn point slightly higher so the suspension can settle
-    Vector3 spawnPoint = {0.0f, 3.0f, 0.0f}; 
+    Vector3 spawnPoint = {0.0f, 3.0f, -10.0f}; 
     
-    LoadPhysicsCage("cage.obj", cageParticles, allSprings, 400.0f, spawnPoint);
+    LoadPhysicsCage("cage.obj", cageParticles, allSprings, 600.0f, spawnPoint);
     LoadWheelsAndSuspension("wheels.obj", wheels, cageParticles, allSprings, spawnPoint);
     
     LoadVisualSkin("Car.obj", carSkin, carIndices, spawnPoint);
     BindSkinToCage(carSkin, cageParticles);
 
-    // Identify Front and Rear Wheels based on Z position
     std::vector<int> frontWheels, rearWheels;
     if (wheels.size() == 4) {
         std::vector<std::pair<float, int>> zSort;
         for(int i=0; i<4; i++) zSort.push_back({wheels[i].position.z, i});
         std::sort(zSort.begin(), zSort.end());
-        // Lowest Z are rear, Highest Z are front (assuming Z+ is forward)
         rearWheels.push_back(zSort[0].second); rearWheels.push_back(zSort[1].second);
         frontWheels.push_back(zSort[2].second); frontWheels.push_back(zSort[3].second);
     }
 
-    float gravity = -15.0f; 
-    float wheelRadius = 0.4f; // Radius of the mathematical forcefield
+    // THE MASSIVE WALL (30 units wide, dead ahead)
+    Obstacle pillar = { {-15.0f, 0.0f, -30.0f}, {15.0f, 10.0f, -25.0f}, GRAY };
 
-    float enginePower = 300.0f;
+    float gravity = -15.0f; 
+    float wheelRadius = 0.4f; 
+
+    // CRANKED ENGINE POWER
+    float enginePower = 2500.0f;
     float steeringAngle = 0.0f;
 
     while (!WindowShouldClose()) {
         float dt = GetFrameTime();
         if (dt > 0.033f) dt = 0.033f;
 
-        // Calculate Master Compass to know which way the car is pointing
         Vector3 cBack = cageParticles[pBack].position;
         Vector3 cFront = cageParticles[pFront].position;
         Vector3 cTop = cageParticles[pTop].position;
@@ -300,19 +320,17 @@ int main() {
         Vector3 carRight = Normalize(Cross(tempUp, carForward));
         Vector3 carUp = Cross(carForward, carRight);
 
-        // --- INPUT: DRIVETRAIN & STEERING ---
+        // --- INPUT ---
         float gas = 0.0f;
         if (IsKeyDown(KEY_W)) gas = enginePower;
-        if (IsKeyDown(KEY_S)) gas = -enginePower; // Reverse/Brake
+        if (IsKeyDown(KEY_S)) gas = -enginePower; 
 
-        // Steering logic (Max 35 degree turn angle)
         if (IsKeyDown(KEY_A)) steeringAngle += 2.0f * dt;
         else if (IsKeyDown(KEY_D)) steeringAngle -= 2.0f * dt;
-        else steeringAngle *= 0.8f; // Auto-center steering
+        else steeringAngle *= 0.8f; 
         if (steeringAngle > 0.6f) steeringAngle = 0.6f;
         if (steeringAngle < -0.6f) steeringAngle = -0.6f;
 
-        // Calculate the direction the front tires are pointing
         Vector3 frontWheelHeading = RotateY(carForward, steeringAngle);
 
         int subSteps = 10; 
@@ -320,47 +338,38 @@ int main() {
 
         // --- PHYSICS SOLVER ---
         for (int i = 0; i < subSteps; i++) {
-            
-            // 1. Apply Gravity to everything
             for (auto& p : cageParticles) p.acceleration.y += gravity;
             for (auto& w : wheels) w.acceleration.y += gravity;
 
-            // 2. Apply Engine Force (All-Wheel Drive)
             if (wheels.size() == 4) {
-                // Front wheels push along their steered heading
                 wheels[frontWheels[0]].acceleration = Add(wheels[frontWheels[0]].acceleration, Scale(frontWheelHeading, gas));
                 wheels[frontWheels[1]].acceleration = Add(wheels[frontWheels[1]].acceleration, Scale(frontWheelHeading, gas));
-                // Rear wheels push straight ahead
                 wheels[rearWheels[0]].acceleration = Add(wheels[rearWheels[0]].acceleration, Scale(carForward, gas));
                 wheels[rearWheels[1]].acceleration = Add(wheels[rearWheels[1]].acceleration, Scale(carForward, gas));
             }
 
-            // 3. Apply Springs (Cage Structure + Suspension)
             for (auto& s : allSprings) ApplySpringForce(s, subDt);
 
-            // 4. Update Chassis Particles
             for (auto& p : cageParticles) {
                 UpdateParticle(p, subDt);
-                // The cage should almost never hit the floor unless you crash hard!
                 if (p.position.y < 0.2f) {
                     p.position.y = 0.2f;
                     p.previous_position.y = p.position.y + (p.position.y - p.previous_position.y) * 0.3f; 
                 }
+                HandleObstacleCollision(p, pillar); // Cage hits wall
             }
 
-            // 5. Update Wheel Particles (The Magic Sauce)
             if (wheels.size() == 4) {
                 for (int wIdx = 0; wIdx < 4; wIdx++) {
                     UpdateParticle(wheels[wIdx], subDt);
+                    HandleObstacleCollision(wheels[wIdx], pillar); // Wheels hit wall
                     
-                    // Wheel Floor Collision (Floating on the radius bubble)
                     if (wheels[wIdx].position.y < wheelRadius) {
                         wheels[wIdx].position.y = wheelRadius;
                         wheels[wIdx].previous_position.y = wheels[wIdx].position.y; 
                         
-                        // If touching the ground, apply tire friction to steer!
                         Vector3 heading = (wIdx == frontWheels[0] || wIdx == frontWheels[1]) ? frontWheelHeading : carForward;
-                        ApplyTireFriction(wheels[wIdx], heading, 0.85f); // 0.85 grip prevents sliding
+                        ApplyTireFriction(wheels[wIdx], heading, 0.85f); 
                     }
                 }
             }
@@ -383,6 +392,10 @@ int main() {
             BeginMode3D(camera);
                 DrawGrid(40, 1.0f);
                 
+                // Draw Huge Wall
+                DrawCube({(pillar.minBounds.x + pillar.maxBounds.x)/2, (pillar.minBounds.y + pillar.maxBounds.y)/2, (pillar.minBounds.z + pillar.maxBounds.z)/2}, 
+                         pillar.maxBounds.x - pillar.minBounds.x, pillar.maxBounds.y - pillar.minBounds.y, pillar.maxBounds.z - pillar.minBounds.z, pillar.color);
+
                 // Draw Wireframe Car Skin
                 for (size_t i = 0; i < carIndices.size(); i += 3) {
                     Vector3 v1 = carSkin[carIndices[i]].position;
@@ -393,14 +406,24 @@ int main() {
                     DrawLine3D(v3, v1, RED);
                 }
 
-                // Draw solid cylinders to visually represent the invisible physics wheels
-                for(auto& w : wheels) {
-                    DrawCylinder(w.position, wheelRadius, wheelRadius, 0.2f, 12, DARKGRAY);
+                // FIXED: Draw wheels aligned with the axle (carRight vector)
+                for(size_t wIdx = 0; wIdx < wheels.size(); wIdx++) {
+                    Vector3 axleDir = carRight;
+                    // Apply steering rotation for front wheels
+                    if (wheels.size() == 4 && (wIdx == frontWheels[0] || wIdx == frontWheels[1])) {
+                        axleDir = RotateY(carRight, steeringAngle);
+                    }
+                    
+                    Vector3 offset = Scale(axleDir, 0.2f); // 0.2f is half the tire width
+                    Vector3 wheelStart = Subtract(wheels[wIdx].position, offset);
+                    Vector3 wheelEnd = Add(wheels[wIdx].position, offset);
+                    
+                    DrawCylinderEx(wheelStart, wheelEnd, wheelRadius, wheelRadius, 16, DARKGRAY);
                 }
 
             EndMode3D();
 
-            DrawText("Drivetrain Active! W/S to accelerate. A/D to steer.", 10, 10, 20, DARKGRAY);
+            DrawText("High Torque Active! Punch it into the wall.", 10, 10, 20, DARKGRAY);
             DrawFPS(10, 40);
         EndDrawing();
     }
