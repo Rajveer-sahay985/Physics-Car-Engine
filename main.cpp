@@ -99,14 +99,22 @@ void ApplySpringForce(Spring& spring, float deltaTime) {
     Vector3 dir = Normalize(Subtract(spring.p2->position, spring.p1->position));
     float displacement = current_distance - spring.rest_length;
 
-    // REALISTIC CRUMPLE: Metal deforms, but caps at 50% crush to prevent spikes
+    // CRUMPLE SYSTEM
     if (!spring.isSuspension) {
-        float yield_point = 0.3f; // Slightly easier to crumple
+        float yield_point = 0.08f;
         if (std::abs(displacement) > yield_point) {
-            float crushAmount = displacement * 0.05f;
-            // Only allow the spring to change length if it hasn't crushed past 50%
-            if (std::abs(spring.rest_length + crushAmount - spring.original_length) < (spring.original_length * 0.5f)) {
-                spring.rest_length += crushAmount; 
+            // Fix 3: measure impact speed along spring direction
+            Vector3 v1 = Subtract(spring.p1->position, spring.p1->previous_position);
+            Vector3 v2 = Subtract(spring.p2->position, spring.p2->previous_position);
+            float impactSpeed = std::abs(Dot(Subtract(v2, v1), dir));
+            float speedMultiplier = 1.0f + impactSpeed * 40.0f;
+
+            // Fix 2: aggressive permanent crush
+            float crushAmount = displacement * 0.18f * speedMultiplier;
+            float maxCrush = spring.original_length * 0.65f;
+            if (std::abs(spring.rest_length + crushAmount - spring.original_length) < maxCrush) {
+                spring.rest_length += crushAmount;
+                spring.damping = std::min(spring.damping + 0.1f, 25.0f);
             }
         }
     }
@@ -276,7 +284,7 @@ int main() {
 
     Vector3 spawnPoint = {0.0f, 3.0f, 5.0f}; 
     
-    LoadPhysicsCage("cage.obj", cageParticles, allSprings, 600.0f, spawnPoint);
+    LoadPhysicsCage("cage.obj", cageParticles, allSprings, 180.0f, spawnPoint);
     LoadWheelsAndSuspension("wheels.obj", wheels, cageParticles, allSprings, spawnPoint);
     LoadVisualSkin("Car.obj", carSkin, carIndices, spawnPoint);
     BindSkinToCage(carSkin, cageParticles);
