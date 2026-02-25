@@ -7,7 +7,7 @@
 #include <string>
 
 // ==========================================
-// 1. MATH HELPERS
+// 1. MATH HELPERS (Local Space Rotation)
 // ==========================================
 Vector3 Subtract(Vector3 v1, Vector3 v2) { return {v1.x - v2.x, v1.y - v2.y, v1.z - v2.z}; }
 Vector3 Add(Vector3 v1, Vector3 v2) { return {v1.x + v2.x, v1.y + v2.y, v1.z + v2.z}; }
@@ -27,12 +27,6 @@ Vector3 Cross(Vector3 v1, Vector3 v2) {
 float Distance(Vector3 v1, Vector3 v2) {
     Vector3 d = Subtract(v1, v2);
     return std::sqrt(d.x*d.x + d.y*d.y + d.z*d.z);
-}
-
-Vector3 RotateY(Vector3 v, float angle) {
-    float c = std::cos(angle);
-    float s = std::sin(angle);
-    return { v.x * c + v.z * s, v.y, -v.x * s + v.z * c };
 }
 
 // ==========================================
@@ -74,9 +68,7 @@ int pFront = 0, pBack = 0, pTop = 0;
 // ==========================================
 void UpdateParticle(Particle& p, float deltaTime) {
     Vector3 velocity = Subtract(p.position, p.previous_position);
-    
-    float friction = 0.99f; 
-    velocity = Scale(velocity, friction);
+    velocity = Scale(velocity, 0.99f); // Drag
 
     p.previous_position = p.position;
     p.position.x += velocity.x + p.acceleration.x * deltaTime * deltaTime;
@@ -87,11 +79,13 @@ void UpdateParticle(Particle& p, float deltaTime) {
 
 void ApplyTireFriction(Particle& wheel, Vector3 heading, float grip) {
     Vector3 vel = Subtract(wheel.position, wheel.previous_position);
-    
     float forwardSpeed = Dot(vel, heading);
     Vector3 forwardVel = Scale(heading, forwardSpeed);
+    
+    // Calculate sliding sideways velocity
     Vector3 lateralVel = Subtract(vel, forwardVel);
     
+    // Kill sideways velocity based on tire grip
     lateralVel = Scale(lateralVel, 1.0f - grip);
     
     Vector3 newVel = Add(forwardVel, lateralVel);
@@ -105,6 +99,7 @@ void ApplySpringForce(Spring& spring, float deltaTime) {
     Vector3 dir = Normalize(Subtract(spring.p2->position, spring.p1->position));
     float displacement = current_distance - spring.rest_length;
 
+    // Metal crumples, but suspension springs do not!
     if (!spring.isSuspension) {
         float yield_point = 0.4f; 
         if (std::abs(displacement) > yield_point) {
@@ -118,7 +113,6 @@ void ApplySpringForce(Spring& spring, float deltaTime) {
     float dampForce = Dot(relVel, dir) * spring.damping;
 
     float force = (spring.stiffness * displacement) + dampForce;
-
     float acc1 = force / spring.p1->mass;
     float acc2 = force / spring.p2->mass;
 
@@ -150,7 +144,7 @@ void HandleObstacleCollision(Particle& p, const Obstacle& obs) {
 }
 
 // ==========================================
-// 4. LOADERS & BINDING
+// 4. LOADERS & THE SUSPENSION WEB
 // ==========================================
 void CreateSpring(std::vector<Spring>& springs, Particle& p1, Particle& p2, float stiffness, float damping, bool isSusp) {
     springs.push_back({&p1, &p2, Distance(p1.position, p2.position), stiffness, damping, isSusp});
@@ -190,16 +184,13 @@ void LoadWheelsAndSuspension(const char* fileName, std::vector<Particle>& wheels
         }
     }
     
-    float suspStiffness = 3500.0f;
-    float suspDamping = 80.0f;
+    // THE SUSPENSION WEB: Fixes the spaghetti wheels!
+    // We connect each wheel to EVERY cage particle. This locks it perfectly in the center.
+    float suspStiffness = 600.0f; // Lowered because we have ~20 springs pulling instead of 4
+    float suspDamping = 30.0f;
     for (auto& w : wheels) {
-        std::vector<std::pair<float, int>> dists;
         for (size_t i = 0; i < cage.size(); i++) {
-            dists.push_back({Distance(w.position, cage[i].position), i});
-        }
-        std::sort(dists.begin(), dists.end());
-        for(int i = 0; i < 4; i++) {
-            CreateSpring(springs, w, cage[dists[i].second], suspStiffness, suspDamping, true);
+            CreateSpring(springs, w, cage[i], suspStiffness, suspDamping, true);
         }
     }
 }
@@ -263,7 +254,7 @@ void BindSkinToCage(std::vector<VisualVertex>& visualVertices, const std::vector
 // 5. MAIN ENGINE LOOP
 // ==========================================
 int main() {
-    InitWindow(1024, 768, "Vortex Engine V2.2 - Grounded Physics");
+    InitWindow(1024, 768, "Vortex Engine V2.3 - The Suspension Web");
     SetTargetFPS(60);
 
     Camera3D camera = { 0 };
@@ -297,13 +288,12 @@ int main() {
         frontWheels.push_back(zSort[2].second); frontWheels.push_back(zSort[3].second);
     }
 
-    // THE CLASSIC PILLAR RESTORED (Placed perfectly in front of the car)
+    // THE CLASSIC PILLAR (Placed directly in your driving path)
     Obstacle pillar = { {-2.0f, 0.0f, -15.0f}, {2.0f, 10.0f, -11.0f}, GRAY };
 
     float gravity = -15.0f; 
     float wheelRadius = 0.4f; 
-
-    float enginePower = 2500.0f;
+    float enginePower = 1500.0f;
     float steeringAngle = 0.0f;
 
     while (!WindowShouldClose()) {
@@ -323,13 +313,14 @@ int main() {
         if (IsKeyDown(KEY_W)) gas = enginePower;
         if (IsKeyDown(KEY_S)) gas = -enginePower; 
 
-        if (IsKeyDown(KEY_A)) steeringAngle += 2.0f * dt;
-        else if (IsKeyDown(KEY_D)) steeringAngle -= 2.0f * dt;
+        if (IsKeyDown(KEY_D)) steeringAngle += 2.0f * dt;
+        else if (IsKeyDown(KEY_A)) steeringAngle -= 2.0f * dt;
         else steeringAngle *= 0.8f; 
         if (steeringAngle > 0.6f) steeringAngle = 0.6f;
         if (steeringAngle < -0.6f) steeringAngle = -0.6f;
 
-        Vector3 frontWheelHeading = RotateY(carForward, steeringAngle);
+        // Local Steering Math: Works perfectly even if doing a barrel roll!
+        Vector3 frontWheelHeading = Add(Scale(carForward, std::cos(steeringAngle)), Scale(carRight, -std::sin(steeringAngle)));
 
         int subSteps = 10; 
         float subDt = dt / subSteps;
@@ -337,14 +328,11 @@ int main() {
         // --- PHYSICS SOLVER ---
         for (int i = 0; i < subSteps; i++) {
             
-            // 1. Gravity (Always applies)
             for (auto& p : cageParticles) p.acceleration.y += gravity;
             for (auto& w : wheels) w.acceleration.y += gravity;
 
-            // 2. Springs
             for (auto& s : allSprings) ApplySpringForce(s, subDt);
 
-            // 3. Update Chassis
             for (auto& p : cageParticles) {
                 UpdateParticle(p, subDt);
                 if (p.position.y < 0.2f) {
@@ -354,24 +342,23 @@ int main() {
                 HandleObstacleCollision(p, pillar); 
             }
 
-            // 4. Update Wheels (THE FIX IS HERE)
             if (wheels.size() == 4) {
                 for (int wIdx = 0; wIdx < 4; wIdx++) {
                     UpdateParticle(wheels[wIdx], subDt);
                     HandleObstacleCollision(wheels[wIdx], pillar); 
                     
-                    // ONLY apply driving force if the wheel is touching the floor!
-                    if (wheels[wIdx].position.y <= wheelRadius) {
+                    // THE UFO FIX: ONLY apply engine force and steering grip IF touching the ground
+                    if (wheels[wIdx].position.y <= wheelRadius + 0.1f) {
                         wheels[wIdx].position.y = wheelRadius;
                         wheels[wIdx].previous_position.y = wheels[wIdx].position.y; 
                         
                         Vector3 heading = (wIdx == frontWheels[0] || wIdx == frontWheels[1]) ? frontWheelHeading : carForward;
                         
-                        // Apply Engine Power (Ground Contact Confirmed)
+                        // Push the car forward
                         wheels[wIdx].acceleration = Add(wheels[wIdx].acceleration, Scale(heading, gas));
                         
-                        // Apply Tire Grip
-                        ApplyTireFriction(wheels[wIdx], heading, 0.85f); 
+                        // Apply Tire Grip (0.08 is perfect for arcade drifting without snapping springs)
+                        ApplyTireFriction(wheels[wIdx], heading, 0.08f); 
                     }
                 }
             }
@@ -394,7 +381,7 @@ int main() {
             BeginMode3D(camera);
                 DrawGrid(40, 1.0f);
                 
-                // Draw Restored Pillar
+                // Draw The Classic Pillar
                 DrawCube({(pillar.minBounds.x + pillar.maxBounds.x)/2, (pillar.minBounds.y + pillar.maxBounds.y)/2, (pillar.minBounds.z + pillar.maxBounds.z)/2}, 
                          pillar.maxBounds.x - pillar.minBounds.x, pillar.maxBounds.y - pillar.minBounds.y, pillar.maxBounds.z - pillar.minBounds.z, pillar.color);
 
@@ -408,11 +395,11 @@ int main() {
                     DrawLine3D(v3, v1, RED);
                 }
 
-                // Draw Steering Tires
+                // Draw Steering Tires (Now using local rotation so they never look weird when flipped!)
                 for(size_t wIdx = 0; wIdx < wheels.size(); wIdx++) {
                     Vector3 axleDir = carRight;
                     if (wheels.size() == 4 && (wIdx == frontWheels[0] || wIdx == frontWheels[1])) {
-                        axleDir = RotateY(carRight, steeringAngle);
+                        axleDir = Add(Scale(carRight, std::cos(steeringAngle)), Scale(carForward, std::sin(steeringAngle)));
                     }
                     
                     Vector3 offset = Scale(axleDir, 0.2f);
@@ -424,7 +411,7 @@ int main() {
 
             EndMode3D();
 
-            DrawText("Grounded Physics Active! The UFO is grounded.", 10, 10, 20, DARKGRAY);
+            DrawText("Suspension Web Active! Wheels locked in place.", 10, 10, 20, DARKGRAY);
             DrawFPS(10, 40);
         EndDrawing();
     }
