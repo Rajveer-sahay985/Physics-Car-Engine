@@ -316,9 +316,30 @@ int main() {
     float currentSteering = 0.0f;
     float visualWheelRot = 0.0f; // Tracks wheel spin
 
+    float camYaw   = 0.0f;   // left/right angle around car
+    float camPitch = 0.4f;   // up/down angle (radians)
+    float camDist  = 12.0f;  // distance from car
+    DisableCursor();          // capture & hide mouse like GTA
+
+
+
+
+
+    Vector3 initFwd = Normalize(Subtract(cageParticles[pFront].position, cageParticles[pBack].position));
+
+
     while (!WindowShouldClose()) {
         float dt = GetFrameTime();
         if (dt > 0.033f) dt = 0.033f;
+
+         // --- GTA CAMERA INPUT ---
+        Vector2 mouseDelta = GetMouseDelta();
+        camYaw   -= mouseDelta.x * 0.004f;
+        camPitch -= mouseDelta.y * 0.004f;
+        camPitch = Clamp(camPitch, 0.05f, 1.4f);
+        float scroll = GetMouseWheelMove();
+        camDist -= scroll * 1.5f;
+        camDist = Clamp(camDist, 4.0f, 30.0f);
 
         Vector3 cBack = cageParticles[pBack].position;
         Vector3 cFront = cageParticles[pFront].position;
@@ -417,13 +438,29 @@ int main() {
             vv.position = Add(cageParticles[vv.boundParticleIndex].position, rotatedOffset);
         }
 
-        // --- CAMERA FOLLOW ---
+        // --- GTA ORBIT CAMERA ---
         if (!cageParticles.empty()) {
-            Vector3 targetPos = cageParticles[0].position;
-            camera.target = targetPos;
-            camera.position.x = Lerp(camera.position.x, targetPos.x + 12.0f, 0.1f);
-            camera.position.y = Lerp(camera.position.y, targetPos.y + 6.0f, 0.1f);
-            camera.position.z = Lerp(camera.position.z, targetPos.z - 12.0f, 0.1f);
+            // Compute TRUE center by averaging ALL cage particles
+            Vector3 carCenter = {0, 0, 0};
+            for (auto& p : cageParticles) {
+                carCenter.x += p.position.x;
+                carCenter.y += p.position.y;
+                carCenter.z += p.position.z;
+            }
+            float n = (float)cageParticles.size();
+            carCenter.x /= n;
+            carCenter.y /= n;
+            carCenter.z /= n;
+            carCenter.y += 1.2f; // eye-level height
+
+            float offsetX = camDist * std::cos(camPitch) * std::sin(camYaw);
+            float offsetY = camDist * std::sin(camPitch);
+            float offsetZ = camDist * std::cos(camPitch) * std::cos(camYaw);
+
+            camera.target   = carCenter;
+            camera.position = { carCenter.x + offsetX,
+                                carCenter.y + offsetY,
+                                carCenter.z + offsetZ };
         }
 
         // --- PERFORMANCE RENDERER ---
