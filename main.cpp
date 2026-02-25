@@ -7,10 +7,11 @@
 #include <string>
 
 // ==========================================
-// 1. MATH HELPERS (Local Coordinate Systems)
+// 1. MATH HELPERS
 // ==========================================
 Vector3 Subtract(Vector3 v1, Vector3 v2) { return {v1.x - v2.x, v1.y - v2.y, v1.z - v2.z}; }
 Vector3 Add(Vector3 v1, Vector3 v2) { return {v1.x + v2.x, v1.y + v2.y, v1.z + v2.z}; }
+Vector3 Scale(Vector3 v, float s) { return {v.x * s, v.y * s, v.z * s}; }
 float Dot(Vector3 v1, Vector3 v2) { return v1.x*v2.x + v1.y*v2.y + v1.z*v2.z; }
 
 Vector3 Normalize(Vector3 v) {
@@ -43,13 +44,13 @@ struct Spring {
     Particle* p2;
     float rest_length;
     float stiffness;
+    float damping; 
 };
 
-// UPGRADED: Now binds to 3 points to preserve rotation!
 struct VisualVertex {
     Vector3 position;
-    int pA, pB, pC; // The indices of the 3 closest physics points
-    Vector3 offset; // Local XYZ offsets relative to the 3 points
+    int boundParticleIndex; // The closest node for CRUMPLING
+    Vector3 offset;         // Master Compass offset for ROTATION
 };
 
 struct Obstacle {
@@ -58,13 +59,15 @@ struct Obstacle {
     Color color;
 };
 
+// Global indices for our Master Compass
+int pFront = 0, pBack = 0, pTop = 0; 
+
 // ==========================================
 // 3. PHYSICS BACKEND
 // ==========================================
 void UpdateParticle(Particle& p, float deltaTime) {
     Vector3 velocity = Subtract(p.position, p.previous_position);
     
-    // Friction
     float friction = (p.position.y <= 0.25f) ? 0.90f : 0.99f;
     velocity.x *= friction; velocity.y *= friction; velocity.z *= friction;
 
@@ -75,21 +78,26 @@ void UpdateParticle(Particle& p, float deltaTime) {
     p.acceleration = {0.0f, 0.0f, 0.0f};
 }
 
-void ApplySpringForce(Spring& spring) {
+void ApplySpringForce(Spring& spring, float deltaTime) {
     float current_distance = Distance(spring.p1->position, spring.p2->position);
     if (current_distance == 0.0f) return;
 
+    Vector3 dir = Normalize(Subtract(spring.p2->position, spring.p1->position));
     float displacement = current_distance - spring.rest_length;
 
-    // --- PLASTIC DEFORMATION (CRUMPLE MATH) ---
-    float yield_point = 0.3f; // Force required to permanently bend the metal
+    // Plastic Deformation (Crumpling)
+    float yield_point = 0.4f; 
     if (std::abs(displacement) > yield_point) {
-        // Permanently alter the rest length. 0.05f is the plasticity rate.
         spring.rest_length += displacement * 0.05f; 
     }
 
-    float force = spring.stiffness * displacement;
-    Vector3 dir = Normalize(Subtract(spring.p2->position, spring.p1->position));
+    // Damping Math
+    Vector3 v1 = Subtract(spring.p1->position, spring.p1->previous_position);
+    Vector3 v2 = Subtract(spring.p2->position, spring.p2->previous_position);
+    Vector3 relVel = Subtract(v2, v1);
+    float dampForce = Dot(relVel, dir) * spring.damping;
+
+    float force = (spring.stiffness * displacement) + dampForce;
 
     float acc1 = force / spring.p1->mass;
     float acc2 = force / spring.p2->mass;
@@ -127,10 +135,10 @@ void HandleObstacleCollision(Particle& p, const Obstacle& obs) {
 }
 
 // ==========================================
-// 4. PARSERS & BINDING
+// 4. PARSERS & MASTER BINDING
 // ==========================================
 void CreateSpring(std::vector<Spring>& springs, Particle& p1, Particle& p2, float stiffness) {
-    springs.push_back({&p1, &p2, Distance(p1.position, p2.position), stiffness});
+    springs.push_back({&p1, &p2, Distance(p1.position, p2.position), stiffness, 3.0f});
 }
 
 void LoadPhysicsCage(const char* fileName, std::vector<Particle>& particles, std::vector<Spring>& springs, float stiffness, Vector3 spawnOffset) {
@@ -171,7 +179,7 @@ void LoadVisualSkin(const char* fileName, std::vector<VisualVertex>& visualVerti
             Vector3 pos;
             iss >> pos.x >> pos.y >> pos.z;
             pos = Add(pos, spawnOffset);
-            visualVertices.push_back({pos, 0, 0, 0, {0,0,0}});
+            visualVertices.push_back({pos, 0, {0,0,0}});
         } 
         else if (prefix == "f") {
             int v[3];
@@ -186,37 +194,42 @@ void LoadVisualSkin(const char* fileName, std::vector<VisualVertex>& visualVerti
     }
 }
 
-// UPGRADED BINDING: Finds 3 points and creates a local coordinate compass
 void BindSkinToCage(std::vector<VisualVertex>& visualVertices, const std::vector<Particle>& particles) {
-    if (particles.size() < 3) return;
+    if (particles.empty()) return;
+
+    // 1. Find the absolute extremities of the cage to create the Master Compass
+    float minZ = 9999, maxZ = -9999, maxY = -9999;
+    for(size_t i = 0; i < particles.size(); i++) {
+        if(particles[i].position.z < minZ) { minZ = particles[i].position.z; pBack = i; }
+        if(particles[i].position.z > maxZ) { maxZ = particles[i].position.z; pFront = i; }
+        if(particles[i].position.y > maxY) { maxY = particles[i].position.y; pTop = i; }
+    }
+
+    // 2. Build the initial Master Compass
+    Vector3 cBack = particles[pBack].position;
+    Vector3 cFront = particles[pFront].position;
+    Vector3 cTop = particles[pTop].position;
+
+    Vector3 forward = Normalize(Subtract(cFront, cBack));
+    Vector3 tempUp = Normalize(Subtract(cTop, cBack));
+    Vector3 right = Normalize(Cross(tempUp, forward));
+    Vector3 up = Cross(forward, right);
 
     for (auto& vv : visualVertices) {
-        // Find the 3 closest cage particles
-        std::vector<std::pair<float, int>> dists;
+        // Find the single closest cage node for local crumpling
+        float minDistance = 999999.0f;
+        int closestIndex = 0;
         for (size_t i = 0; i < particles.size(); i++) {
-            dists.push_back({Distance(vv.position, particles[i].position), i});
+            float dist = Distance(vv.position, particles[i].position);
+            if (dist < minDistance) { minDistance = dist; closestIndex = i; }
         }
-        std::sort(dists.begin(), dists.end());
-        
-        vv.pA = dists[0].second;
-        vv.pB = dists[1].second;
-        vv.pC = dists[2].second;
+        vv.boundParticleIndex = closestIndex;
 
-        Vector3 pA = particles[vv.pA].position;
-        Vector3 pB = particles[vv.pB].position;
-        Vector3 pC = particles[vv.pC].position;
-
-        // Build a local XYZ compass for this specific vertex
-        Vector3 x_axis = Normalize(Subtract(pB, pA));
-        Vector3 temp = Normalize(Subtract(pC, pA));
-        Vector3 y_axis = Normalize(Cross(x_axis, temp));
-        Vector3 z_axis = Cross(x_axis, y_axis);
-
-        // Store its offset relative to this compass, not the world
-        Vector3 diff = Subtract(vv.position, pA);
-        vv.offset.x = Dot(diff, x_axis);
-        vv.offset.y = Dot(diff, y_axis);
-        vv.offset.z = Dot(diff, z_axis);
+        // Save the offset relative to the Master Compass
+        Vector3 globalOffset = Subtract(vv.position, particles[closestIndex].position);
+        vv.offset.x = Dot(globalOffset, right);
+        vv.offset.y = Dot(globalOffset, up);
+        vv.offset.z = Dot(globalOffset, forward);
     }
 }
 
@@ -224,7 +237,7 @@ void BindSkinToCage(std::vector<VisualVertex>& visualVertices, const std::vector
 // 5. MAIN ENGINE LOOP
 // ==========================================
 int main() {
-    InitWindow(1024, 768, "Vortex Engine V1.1 - Plastic Deformation");
+    InitWindow(1024, 768, "Vortex Engine V1.3 - Stable Wireframe Edition");
     SetTargetFPS(60);
 
     Camera3D camera = { 0 };
@@ -241,7 +254,7 @@ int main() {
 
     Vector3 spawnPoint = {0.0f, 5.0f, 0.0f};
     
-    LoadPhysicsCage("cage.obj", cageParticles, cageSprings, 300.0f, spawnPoint);
+    LoadPhysicsCage("cage.obj", cageParticles, cageSprings, 400.0f, spawnPoint);
     LoadVisualSkin("Car.obj", carSkin, carIndices, spawnPoint);
     BindSkinToCage(carSkin, cageParticles);
 
@@ -270,7 +283,7 @@ int main() {
                 p.acceleration.z += driveForce.z;
             }
 
-            for (auto& s : cageSprings) ApplySpringForce(s);
+            for (auto& s : cageSprings) ApplySpringForce(s, subDt);
 
             for (auto& p : cageParticles) {
                 UpdateParticle(p, subDt);
@@ -283,20 +296,20 @@ int main() {
             }
         }
 
-        // UPGRADED VISUAL UPDATE: Reconstruct position using the local compass
+        // RECALCULATE MASTER COMPASS dynamically every frame
+        Vector3 cBack = cageParticles[pBack].position;
+        Vector3 cFront = cageParticles[pFront].position;
+        Vector3 cTop = cageParticles[pTop].position;
+
+        Vector3 forward = Normalize(Subtract(cFront, cBack));
+        Vector3 tempUp = Normalize(Subtract(cTop, cBack));
+        Vector3 right = Normalize(Cross(tempUp, forward));
+        Vector3 up = Cross(forward, right);
+
+        // Update the visual car skin perfectly smoothly
         for (auto& vv : carSkin) {
-            Vector3 pA = cageParticles[vv.pA].position;
-            Vector3 pB = cageParticles[vv.pB].position;
-            Vector3 pC = cageParticles[vv.pC].position;
-
-            Vector3 x_axis = Normalize(Subtract(pB, pA));
-            Vector3 temp = Normalize(Subtract(pC, pA));
-            Vector3 y_axis = Normalize(Cross(x_axis, temp));
-            Vector3 z_axis = Cross(x_axis, y_axis);
-
-            vv.position.x = pA.x + x_axis.x * vv.offset.x + y_axis.x * vv.offset.y + z_axis.x * vv.offset.z;
-            vv.position.y = pA.y + x_axis.y * vv.offset.x + y_axis.y * vv.offset.y + z_axis.y * vv.offset.z;
-            vv.position.z = pA.z + x_axis.z * vv.offset.x + y_axis.z * vv.offset.y + z_axis.z * vv.offset.z;
+            Vector3 rotatedOffset = Add(Add(Scale(right, vv.offset.x), Scale(up, vv.offset.y)), Scale(forward, vv.offset.z));
+            vv.position = Add(cageParticles[vv.boundParticleIndex].position, rotatedOffset);
         }
 
         if (!cageParticles.empty()) {
@@ -312,17 +325,19 @@ int main() {
                 DrawCube({(pillar.minBounds.x + pillar.maxBounds.x)/2, (pillar.minBounds.y + pillar.maxBounds.y)/2, (pillar.minBounds.z + pillar.maxBounds.z)/2}, 
                          pillar.maxBounds.x - pillar.minBounds.x, pillar.maxBounds.y - pillar.minBounds.y, pillar.maxBounds.z - pillar.minBounds.z, pillar.color);
 
+                // PURE WIREFRAME RENDER: Max performance, no heavy shading
                 for (size_t i = 0; i < carIndices.size(); i += 3) {
                     Vector3 v1 = carSkin[carIndices[i]].position;
                     Vector3 v2 = carSkin[carIndices[i+1]].position;
                     Vector3 v3 = carSkin[carIndices[i+2]].position;
-                    DrawTriangle3D(v1, v2, v3, RED);
-                    DrawTriangle3D(v3, v2, v1, RED); 
+                    
+                    DrawLine3D(v1, v2, RED);
+                    DrawLine3D(v2, v3, RED);
+                    DrawLine3D(v3, v1, RED);
                 }
-                // The cage rendering loop is completely gone!
             EndMode3D();
 
-            DrawText("Plastic Crumple Active. WASD to Drive", 10, 10, 20, DARKGRAY);
+            DrawText("Master Compass Wireframe. Flips beautifully!", 10, 10, 20, DARKGRAY);
             DrawFPS(10, 40);
         EndDrawing();
     }
