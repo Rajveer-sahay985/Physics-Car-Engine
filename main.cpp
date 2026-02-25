@@ -328,12 +328,11 @@ int main() {
         Vector3 carRight = Normalize(Cross(tempUp, carForward));
         Vector3 carUp = Cross(carForward, carRight);
 
-        // --- HEAVY INPUT SMOOTHING ---
+        bool handbrake = IsKeyDown(KEY_SPACE);
         float targetGas = 0.0f;
         if (IsKeyDown(KEY_W)) targetGas = maxEnginePower;
-        if (IsKeyDown(KEY_S)) targetGas = -maxEnginePower; 
-        
-        // MOMENTUM FIX: The '1.5f' makes acceleration gradual like a heavy car, removing the RC feel.
+        if (IsKeyDown(KEY_S)) targetGas = -maxEnginePower;
+        if (handbrake) targetGas = 0.0f;  // cut engine on handbrake
         currentGas += (targetGas - currentGas) * 1.5f * dt;
 
         float targetSteer = 0.0f;
@@ -341,7 +340,7 @@ int main() {
         if (IsKeyDown(KEY_D)) targetSteer = 0.6f;
         
         currentSteering += (targetSteer - currentSteering) * 5.0f * dt;
-        bool handbrake = IsKeyDown(KEY_SPACE);
+       
 
         Vector3 frontWheelHeading = Add(Scale(carForward, std::cos(currentSteering)), Scale(carRight, -std::sin(currentSteering)));
         
@@ -382,14 +381,22 @@ int main() {
                         
                         Vector3 heading = (wIdx == frontWheels[0] || wIdx == frontWheels[1]) ? frontWheelHeading : carForward;
                         
-                        float grip = 0.08f; // Arcade Drift Grip
-                        if (handbrake && (wIdx == rearWheels[0] || wIdx == rearWheels[1])) {
-                            grip = 0.01f; // Slip on spacebar!
+                        float grip = 0.75f;
+                        if (handbrake) {
+                            // Front wheels: high grip (they steer and resist)
+                            // Rear wheels: low grip (they slide)
+                            grip = (wIdx == rearWheels[0] || wIdx == rearWheels[1]) ? 0.02f : 0.6f;
+                            
+                            // Kill forward momentum on ALL wheels
+                            Vector3 vel = Subtract(wheels[wIdx].position, wheels[wIdx].previous_position);
+                            float fwdSpeed = Dot(vel, carForward);
+                            Vector3 brakeDrag = Scale(carForward, -fwdSpeed * 0.6f);
+                            wheels[wIdx].acceleration = Add(wheels[wIdx].acceleration, brakeDrag);
                         } else {
                             wheels[wIdx].acceleration = Add(wheels[wIdx].acceleration, Scale(heading, currentGas));
-                        }
+                        }   
                         
-                        ApplyTireFriction(wheels[wIdx], heading, grip); 
+                        ApplyTireFriction(wheels[wIdx], heading, grip);
                     }
                 }
             }
