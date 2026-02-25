@@ -1,6 +1,7 @@
 #include "raylib.h"
 #include <cmath>
 #include <vector>
+#include <algorithm>
 
 // ==========================================
 // 1. DATA STRUCTURES
@@ -21,7 +22,6 @@ struct Spring {
     float damping;
 };
 
-// Define a rigid obstacle
 struct Obstacle {
     Vector3 minBounds;
     Vector3 maxBounds;
@@ -46,7 +46,6 @@ void UpdateParticle(Particle& p, float deltaTime) {
         p.position.z - p.previous_position.z
     };
 
-    // Ground friction: If it's touching the ground, slow it down so it doesn't slide like ice
     float friction = (p.position.y <= 0.25f) ? 0.90f : 0.99f;
     velocity.x *= friction;
     velocity.y *= friction;
@@ -86,13 +85,11 @@ void ApplySpringForce(Spring& spring) {
     spring.p2->acceleration.z -= direction.z * acc2;
 }
 
-// AABB Collision: Checks if a particle is inside a box and pushes it out
 void HandleObstacleCollision(Particle& p, const Obstacle& obs) {
     if (p.position.x > obs.minBounds.x && p.position.x < obs.maxBounds.x &&
         p.position.y > obs.minBounds.y && p.position.y < obs.maxBounds.y &&
         p.position.z > obs.minBounds.z && p.position.z < obs.maxBounds.z) {
         
-        // Find the closest face of the box to push the particle out of
         float distToMinX = p.position.x - obs.minBounds.x;
         float distToMaxX = obs.maxBounds.x - p.position.x;
         float distToMinY = p.position.y - obs.minBounds.y;
@@ -100,7 +97,6 @@ void HandleObstacleCollision(Particle& p, const Obstacle& obs) {
         float distToMinZ = p.position.z - obs.minBounds.z;
         float distToMaxZ = obs.maxBounds.z - p.position.z;
 
-        // Push out on the shortest axis and kill momentum on that axis to simulate a crash
         float minDist = std::min({distToMinX, distToMaxX, distToMinY, distToMaxY, distToMinZ, distToMaxZ});
 
         if (minDist == distToMinX) { p.position.x = obs.minBounds.x; p.previous_position.x = p.position.x; }
@@ -113,7 +109,7 @@ void HandleObstacleCollision(Particle& p, const Obstacle& obs) {
 }
 
 // ==========================================
-// 3. RENDER FRONTEND
+// 3. OBJ PARSER & SCENE GENERATION
 // ==========================================
 
 void CreateSpring(std::vector<Spring>& springs, Particle& p1, Particle& p2, float stiffness) {
@@ -121,21 +117,97 @@ void CreateSpring(std::vector<Spring>& springs, Particle& p1, Particle& p2, floa
     springs.push_back({&p1, &p2, dist, stiffness, 0.1f});
 }
 
-// Helper to draw a solid quad (2 triangles) between 4 particles
-void DrawSoftFace(Particle& p1, Particle& p2, Particle& p3, Particle& p4, Color color) {
-    // Draw double-sided triangles so they don't disappear when the car crumples
-    DrawTriangle3D(p1.position, p2.position, p3.position, color);
-    DrawTriangle3D(p3.position, p2.position, p1.position, color);
-    
-    DrawTriangle3D(p1.position, p3.position, p4.position, color);
-    DrawTriangle3D(p4.position, p3.position, p1.position, color);
+// Loads the OBJ, welds duplicate vertices, and generates internal volume springs
+void LoadMeshIntoPhysics(const char* fileName, std::vector<Particle>& particles, std::vector<Spring>& springs, std::vector<int>& indices, float stiffness, Vector3 spawnOffset) {
+    Model model = LoadModel(fileName);
+    if (model.meshes == NULL || model.meshCount == 0) {
+        return; 
+    }
+
+    Mesh mesh = model.meshes[0]; 
+
+    // --- 1. THE WELDER (Extract Unique Vertices) ---
+    // We keep a map to translate Blender's bloated vertex list to our optimized, welded physics list
+    std::vector<int> originalToUniqueMap(mesh.vertexCount);
+
+    for (int i = 0; i < mesh.vertexCount; i++) {
+        Vector3 pos = {
+            mesh.vertices[i * 3] + spawnOffset.x,
+            mesh.vertices[i * 3 + 1] + spawnOffset.y,
+            mesh.vertices[i * 3 + 2] + spawnOffset.z
+        };
+
+        // Check if a particle already exists at this exact spot (welding distance: 0.001)
+        int existingIndex = -1;
+        for (size_t j = 0; j < particles.size(); j++) {
+            if (Vector3Distance(particles[j].position, pos) < 0.001f) {
+                existingIndex = j;
+                break;
+            }
+        }
+
+        if (existingIndex == -1) {
+            // It's a brand new corner. Add it to our physics engine.
+            particles.push_back({pos, pos, {0.0f, 0.0f, 0.0f}, 1.0f});
+            originalToUniqueMap[i] = particles.size() - 1;
+        } else {
+            // Duplicate found! Weld it to the existing particle.
+            originalToUniqueMap[i] = existingIndex;
+        }
+    }
+
+    // --- 2. THE SHELL (Extract Triangles using our Welded Vertices) ---
+    if (mesh.indices != NULL) {
+        for (int i = 0; i < mesh.triangleCount; i++) {
+            // Grab the indices, but run them through our map so they share the welded corners
+            int idx1 = originalToUniqueMap[mesh.indices[i * 3]];
+            int idx2 = originalToUniqueMap[mesh.indices[i * 3 + 1]];
+            int idx3 = originalToUniqueMap[mesh.indices[i * 3 + 2]];
+
+            indices.push_back(idx1); indices.push_back(idx2); indices.push_back(idx3);
+
+            CreateSpring(springs, particles[idx1], particles[idx2], stiffness);
+            CreateSpring(springs, particles[idx2], particles[idx3], stiffness);
+            CreateSpring(springs, particles[idx3], particles[idx1], stiffness);
+        }
+    } else {
+        // Handle unrolled meshes using the same welded map
+        for (int i = 0; i < mesh.vertexCount; i += 3) {
+            int idx1 = originalToUniqueMap[i];
+            int idx2 = originalToUniqueMap[i + 1];
+            int idx3 = originalToUniqueMap[i + 2];
+
+            indices.push_back(idx1); indices.push_back(idx2); indices.push_back(idx3);
+
+            CreateSpring(springs, particles[idx1], particles[idx2], stiffness);
+            CreateSpring(springs, particles[idx2], particles[idx3], stiffness);
+            CreateSpring(springs, particles[idx3], particles[idx1], stiffness);
+        }
+    }
+
+    // --- 3. THE BRACER (Generate Internal Structure) ---
+    // Connect particles across the inside of the shape so it doesn't fold flat
+    for (size_t i = 0; i < particles.size(); i++) {
+        for (size_t j = i + 1; j < particles.size(); j++) {
+            float dist = Vector3Distance(particles[i].position, particles[j].position);
+            // If they are within a certain distance, shoot a structural spring between them
+            // We use 5.0f here assuming your cuboid isn't massive. 
+            if (dist > 0.1f && dist < 5.0f) {
+                // We make internal springs slightly softer so the outside shell takes the impact
+                CreateSpring(springs, particles[i], particles[j], stiffness * 0.8f); 
+            }
+        }
+    }
+
+    UnloadModel(model); 
 }
+
 
 // ==========================================
 // 4. MAIN ENGINE LOOP
 // ==========================================
 int main() {
-    InitWindow(1024, 768, "Vortex Engine V0.4 - Drivable Polygons");
+    InitWindow(1024, 768, "Vortex Engine V0.5 - Custom OBJ Loader");
     SetTargetFPS(60);
 
     Camera3D camera = { 0 };
@@ -147,41 +219,18 @@ int main() {
 
     std::vector<Particle> p;
     std::vector<Spring> springs;
+    std::vector<int> renderIndices;
 
-    float startY = 1.0f;
-    float size = 2.0f;
+    float stiffness = 800.0f; // Increased stiffness so the custom model holds its shape better
     
-    // Bottom 4 vertices
-    p.push_back({{0.0f, startY, 0.0f}, {0.0f, startY, 0.0f}, {0.0f,0.0f,0.0f}, 1.0f}); // 0
-    p.push_back({{size, startY, 0.0f}, {size, startY, 0.0f}, {0.0f,0.0f,0.0f}, 1.0f}); // 1
-    p.push_back({{size, startY, size}, {size, startY, size}, {0.0f,0.0f,0.0f}, 1.0f}); // 2
-    p.push_back({{0.0f, startY, size}, {0.0f, startY, size}, {0.0f,0.0f,0.0f}, 1.0f}); // 3
-    
-    // Top 4 vertices
-    p.push_back({{0.0f, startY+size, 0.0f}, {0.0f, startY+size, 0.0f}, {0.0f,0.0f,0.0f}, 1.0f}); // 4
-    p.push_back({{size, startY+size, 0.0f}, {size, startY+size, 0.0f}, {0.0f,0.0f,0.0f}, 1.0f}); // 5
-    p.push_back({{size, startY+size, size}, {size, startY+size, size}, {0.0f,0.0f,0.0f}, 1.0f}); // 6
-    p.push_back({{0.0f, startY+size, size}, {0.0f, startY+size, size}, {0.0f,0.0f,0.0f}, 1.0f}); // 7
+    // Load your custom Blender file here! Spawning it 5 units in the air.
+    LoadMeshIntoPhysics("Cuboid.obj", p, springs, renderIndices, stiffness, {0.0f, 5.0f, 0.0f});
 
-    float k = 400.0f; // Stiffness
-
-    // Build the structural springs (same as before)
-    CreateSpring(springs, p[0], p[1], k); CreateSpring(springs, p[1], p[2], k);
-    CreateSpring(springs, p[2], p[3], k); CreateSpring(springs, p[3], p[0], k);
-    CreateSpring(springs, p[4], p[5], k); CreateSpring(springs, p[5], p[6], k);
-    CreateSpring(springs, p[6], p[7], k); CreateSpring(springs, p[7], p[4], k);
-    CreateSpring(springs, p[0], p[4], k); CreateSpring(springs, p[1], p[5], k);
-    CreateSpring(springs, p[2], p[6], k); CreateSpring(springs, p[3], p[7], k);
-    CreateSpring(springs, p[0], p[6], k); CreateSpring(springs, p[1], p[7], k);
-    CreateSpring(springs, p[2], p[4], k); CreateSpring(springs, p[3], p[5], k);
-
-    // Create an Obstacle (A massive concrete pillar)
     Obstacle pillar = { {-5.0f, 0.0f, -5.0f}, {-2.0f, 10.0f, -2.0f}, GRAY };
 
     float gravity = -15.0f; 
     float driveSpeed = 50.0f;
 
-    // --- MAIN GAME LOOP ---
     while (!WindowShouldClose()) {
         float dt = GetFrameTime();
         if (dt > 0.033f) dt = 0.033f; 
@@ -196,12 +245,9 @@ int main() {
         // Apply external forces
         for (auto& particle : p) {
             particle.acceleration.y += gravity;
-            
-            // Only apply driving force to bottom particles to simulate wheels pushing
-            if (particle.position.y < startY + 1.0f) {
-                particle.acceleration.x += driveForce.x;
-                particle.acceleration.z += driveForce.z;
-            }
+            // Applying driving force to all particles dynamically for testing
+            particle.acceleration.x += driveForce.x;
+            particle.acceleration.z += driveForce.z;
         }
 
         // 2. Apply Springs
@@ -218,13 +264,14 @@ int main() {
                 particle.previous_position.y = particle.position.y + (vy * 0.3f); 
             }
 
-            // Obstacle Collision
             HandleObstacleCollision(particle, pillar);
         }
 
-        // Make the camera follow the car
-        camera.target = p[5].position;
-        camera.position = { p[5].position.x + 10.0f, 10.0f, p[5].position.z + 15.0f };
+        // Camera follow (locks onto the first vertex loaded)
+        if (!p.empty()) {
+            camera.target = p[0].position;
+            camera.position = { p[0].position.x + 10.0f, 10.0f, p[0].position.z + 15.0f };
+        }
 
         // --- RENDER ---
         BeginDrawing();
@@ -233,43 +280,29 @@ int main() {
             BeginMode3D(camera);
                 DrawGrid(40, 1.0f);
                 
-                // Draw the Obstacle
-                DrawCube(
-                    {(pillar.minBounds.x + pillar.maxBounds.x)/2, 
-                     (pillar.minBounds.y + pillar.maxBounds.y)/2, 
-                     (pillar.minBounds.z + pillar.maxBounds.z)/2}, 
-                    pillar.maxBounds.x - pillar.minBounds.x, 
-                    pillar.maxBounds.y - pillar.minBounds.y, 
-                    pillar.maxBounds.z - pillar.minBounds.z, 
-                    pillar.color
-                );
-                DrawCubeWires(
-                    {(pillar.minBounds.x + pillar.maxBounds.x)/2, 
-                     (pillar.minBounds.y + pillar.maxBounds.y)/2, 
-                     (pillar.minBounds.z + pillar.maxBounds.z)/2}, 
-                    pillar.maxBounds.x - pillar.minBounds.x, 
-                    pillar.maxBounds.y - pillar.minBounds.y, 
-                    pillar.maxBounds.z - pillar.minBounds.z, 
-                    DARKGRAY
-                );
+                // Draw Obstacle
+                DrawCube({(pillar.minBounds.x + pillar.maxBounds.x)/2, (pillar.minBounds.y + pillar.maxBounds.y)/2, (pillar.minBounds.z + pillar.maxBounds.z)/2}, 
+                         pillar.maxBounds.x - pillar.minBounds.x, pillar.maxBounds.y - pillar.minBounds.y, pillar.maxBounds.z - pillar.minBounds.z, pillar.color);
 
-                // Draw the Polygons (Faces of the cube)
-                Color carColor = RED;
-                DrawSoftFace(p[0], p[1], p[5], p[4], carColor); // Front
-                DrawSoftFace(p[1], p[2], p[6], p[5], carColor); // Right
-                DrawSoftFace(p[2], p[3], p[7], p[6], carColor); // Back
-                DrawSoftFace(p[3], p[0], p[4], p[7], carColor); // Left
-                DrawSoftFace(p[4], p[5], p[6], p[7], carColor); // Top
-                DrawSoftFace(p[3], p[2], p[1], p[0], carColor); // Bottom
+                // Draw Dynamic Polygons from OBJ
+                for (size_t i = 0; i < renderIndices.size(); i += 3) {
+                    Vector3 v1 = p[renderIndices[i]].position;
+                    Vector3 v2 = p[renderIndices[i+1]].position;
+                    Vector3 v3 = p[renderIndices[i+2]].position;
 
-                // Draw Wireframe over the polygons so you can still see the topology morph
+                    // Draw double-sided triangles
+                    DrawTriangle3D(v1, v2, v3, RED);
+                    DrawTriangle3D(v3, v2, v1, RED);
+                }
+
+                // Draw Wireframe overlay
                 for (auto& s : springs) {
                     DrawLine3D(s.p1->position, s.p2->position, BLACK);
                 }
 
             EndMode3D();
 
-            DrawText("WASD to Drive | Smash into the pillar!", 10, 10, 20, DARKGRAY);
+            DrawText("Custom OBJ Loaded! WASD to Drive", 10, 10, 20, DARKGRAY);
             DrawFPS(10, 40);
         EndDrawing();
     }
