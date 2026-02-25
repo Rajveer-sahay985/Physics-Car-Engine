@@ -345,8 +345,11 @@ int main() {
 
         Vector3 frontWheelHeading = Add(Scale(carForward, std::cos(currentSteering)), Scale(carRight, -std::sin(currentSteering)));
         
-        // Calculate visual wheel spin based on actual physical movement
-        visualWheelRot += (Dot(Subtract(wheels[fl].position, wheels[fl].previous_position), carForward) / wheelRadius);
+
+        // --- Save wheel positions BEFORE substeps ---
+        Vector3 wheelStartPos[4];
+        for (int i = 0; i < 4 && i < (int)wheels.size(); i++)
+            wheelStartPos[i] = wheels[i].position;
 
         int subSteps = 10; 
         float subDt = dt / subSteps;
@@ -390,6 +393,15 @@ int main() {
                     }
                 }
             }
+        }
+
+
+        // --- CORRECT WHEEL SPIN: full-frame displacement / circumference ---
+        if (wheels.size() == 4) {
+            // Use rear wheel for spin (unsteered, clean forward velocity)
+            Vector3 rlDisplacement = Subtract(wheels[rl].position, wheelStartPos[rl]);
+            float signedDist = Dot(rlDisplacement, carForward);
+            visualWheelRot += signedDist / wheelRadius;
         }
 
         // --- VISUAL UPDATE ---
