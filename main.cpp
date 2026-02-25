@@ -337,8 +337,8 @@ int main() {
         currentGas += (targetGas - currentGas) * 1.5f * dt;
 
         float targetSteer = 0.0f;
-        if (IsKeyDown(KEY_A)) targetSteer = 0.6f;
-        if (IsKeyDown(KEY_D)) targetSteer = -0.6f;
+        if (IsKeyDown(KEY_A)) targetSteer = -0.6f;
+        if (IsKeyDown(KEY_D)) targetSteer = 0.6f;
         
         currentSteering += (targetSteer - currentSteering) * 5.0f * dt;
         bool handbrake = IsKeyDown(KEY_SPACE);
