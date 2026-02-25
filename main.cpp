@@ -186,11 +186,10 @@ void LoadWheelsAndSuspension(const char* fileName, std::vector<Particle>& wheels
         if (prefix == "v") {
             Vector3 pos; iss >> pos.x >> pos.y >> pos.z;
             pos = Add(pos, spawnOffset);
-            wheels.push_back({pos, pos, {0,0,0}, 4.0f, true}); // Heavy tires
+            wheels.push_back({pos, pos, {0,0,0}, 4.0f, true}); 
         }
     }
     
-    // TIGHTENED SUSPENSION: Fixes the bungee cord effect
     float suspStiffness = 3500.0f;
     float suspDamping = 80.0f;
     for (auto& w : wheels) {
@@ -264,7 +263,7 @@ void BindSkinToCage(std::vector<VisualVertex>& visualVertices, const std::vector
 // 5. MAIN ENGINE LOOP
 // ==========================================
 int main() {
-    InitWindow(1024, 768, "Vortex Engine V2.1 - High Torque & Upright Tires");
+    InitWindow(1024, 768, "Vortex Engine V2.2 - Grounded Physics");
     SetTargetFPS(60);
 
     Camera3D camera = { 0 };
@@ -281,7 +280,7 @@ int main() {
     std::vector<VisualVertex> carSkin;
     std::vector<int> carIndices;
 
-    Vector3 spawnPoint = {0.0f, 3.0f, -10.0f}; 
+    Vector3 spawnPoint = {0.0f, 3.0f, 5.0f}; 
     
     LoadPhysicsCage("cage.obj", cageParticles, allSprings, 600.0f, spawnPoint);
     LoadWheelsAndSuspension("wheels.obj", wheels, cageParticles, allSprings, spawnPoint);
@@ -298,13 +297,12 @@ int main() {
         frontWheels.push_back(zSort[2].second); frontWheels.push_back(zSort[3].second);
     }
 
-    // THE MASSIVE WALL (30 units wide, dead ahead)
-    Obstacle pillar = { {-15.0f, 0.0f, -30.0f}, {15.0f, 10.0f, -25.0f}, GRAY };
+    // THE CLASSIC PILLAR RESTORED (Placed perfectly in front of the car)
+    Obstacle pillar = { {-2.0f, 0.0f, -15.0f}, {2.0f, 10.0f, -11.0f}, GRAY };
 
     float gravity = -15.0f; 
     float wheelRadius = 0.4f; 
 
-    // CRANKED ENGINE POWER
     float enginePower = 2500.0f;
     float steeringAngle = 0.0f;
 
@@ -338,37 +336,41 @@ int main() {
 
         // --- PHYSICS SOLVER ---
         for (int i = 0; i < subSteps; i++) {
+            
+            // 1. Gravity (Always applies)
             for (auto& p : cageParticles) p.acceleration.y += gravity;
             for (auto& w : wheels) w.acceleration.y += gravity;
 
-            if (wheels.size() == 4) {
-                wheels[frontWheels[0]].acceleration = Add(wheels[frontWheels[0]].acceleration, Scale(frontWheelHeading, gas));
-                wheels[frontWheels[1]].acceleration = Add(wheels[frontWheels[1]].acceleration, Scale(frontWheelHeading, gas));
-                wheels[rearWheels[0]].acceleration = Add(wheels[rearWheels[0]].acceleration, Scale(carForward, gas));
-                wheels[rearWheels[1]].acceleration = Add(wheels[rearWheels[1]].acceleration, Scale(carForward, gas));
-            }
-
+            // 2. Springs
             for (auto& s : allSprings) ApplySpringForce(s, subDt);
 
+            // 3. Update Chassis
             for (auto& p : cageParticles) {
                 UpdateParticle(p, subDt);
                 if (p.position.y < 0.2f) {
                     p.position.y = 0.2f;
                     p.previous_position.y = p.position.y + (p.position.y - p.previous_position.y) * 0.3f; 
                 }
-                HandleObstacleCollision(p, pillar); // Cage hits wall
+                HandleObstacleCollision(p, pillar); 
             }
 
+            // 4. Update Wheels (THE FIX IS HERE)
             if (wheels.size() == 4) {
                 for (int wIdx = 0; wIdx < 4; wIdx++) {
                     UpdateParticle(wheels[wIdx], subDt);
-                    HandleObstacleCollision(wheels[wIdx], pillar); // Wheels hit wall
+                    HandleObstacleCollision(wheels[wIdx], pillar); 
                     
-                    if (wheels[wIdx].position.y < wheelRadius) {
+                    // ONLY apply driving force if the wheel is touching the floor!
+                    if (wheels[wIdx].position.y <= wheelRadius) {
                         wheels[wIdx].position.y = wheelRadius;
                         wheels[wIdx].previous_position.y = wheels[wIdx].position.y; 
                         
                         Vector3 heading = (wIdx == frontWheels[0] || wIdx == frontWheels[1]) ? frontWheelHeading : carForward;
+                        
+                        // Apply Engine Power (Ground Contact Confirmed)
+                        wheels[wIdx].acceleration = Add(wheels[wIdx].acceleration, Scale(heading, gas));
+                        
+                        // Apply Tire Grip
                         ApplyTireFriction(wheels[wIdx], heading, 0.85f); 
                     }
                 }
@@ -392,11 +394,11 @@ int main() {
             BeginMode3D(camera);
                 DrawGrid(40, 1.0f);
                 
-                // Draw Huge Wall
+                // Draw Restored Pillar
                 DrawCube({(pillar.minBounds.x + pillar.maxBounds.x)/2, (pillar.minBounds.y + pillar.maxBounds.y)/2, (pillar.minBounds.z + pillar.maxBounds.z)/2}, 
                          pillar.maxBounds.x - pillar.minBounds.x, pillar.maxBounds.y - pillar.minBounds.y, pillar.maxBounds.z - pillar.minBounds.z, pillar.color);
 
-                // Draw Wireframe Car Skin
+                // Draw Wireframe Car
                 for (size_t i = 0; i < carIndices.size(); i += 3) {
                     Vector3 v1 = carSkin[carIndices[i]].position;
                     Vector3 v2 = carSkin[carIndices[i+1]].position;
@@ -406,15 +408,14 @@ int main() {
                     DrawLine3D(v3, v1, RED);
                 }
 
-                // FIXED: Draw wheels aligned with the axle (carRight vector)
+                // Draw Steering Tires
                 for(size_t wIdx = 0; wIdx < wheels.size(); wIdx++) {
                     Vector3 axleDir = carRight;
-                    // Apply steering rotation for front wheels
                     if (wheels.size() == 4 && (wIdx == frontWheels[0] || wIdx == frontWheels[1])) {
                         axleDir = RotateY(carRight, steeringAngle);
                     }
                     
-                    Vector3 offset = Scale(axleDir, 0.2f); // 0.2f is half the tire width
+                    Vector3 offset = Scale(axleDir, 0.2f);
                     Vector3 wheelStart = Subtract(wheels[wIdx].position, offset);
                     Vector3 wheelEnd = Add(wheels[wIdx].position, offset);
                     
@@ -423,7 +424,7 @@ int main() {
 
             EndMode3D();
 
-            DrawText("High Torque Active! Punch it into the wall.", 10, 10, 20, DARKGRAY);
+            DrawText("Grounded Physics Active! The UFO is grounded.", 10, 10, 20, DARKGRAY);
             DrawFPS(10, 40);
         EndDrawing();
     }
