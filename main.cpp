@@ -7,7 +7,7 @@
 #include <string>
 
 // ==========================================
-// 1. MATH HELPERS (Local Space Rotation)
+// 1. MATH HELPERS
 // ==========================================
 Vector3 Subtract(Vector3 v1, Vector3 v2) { return {v1.x - v2.x, v1.y - v2.y, v1.z - v2.z}; }
 Vector3 Add(Vector3 v1, Vector3 v2) { return {v1.x + v2.x, v1.y + v2.y, v1.z + v2.z}; }
@@ -64,11 +64,11 @@ struct Obstacle {
 int pFront = 0, pBack = 0, pTop = 0; 
 
 // ==========================================
-// 3. PHYSICS BACKEND
+// 3. PHYSICS BACKEND (The Golden Era Logic)
 // ==========================================
 void UpdateParticle(Particle& p, float deltaTime) {
     Vector3 velocity = Subtract(p.position, p.previous_position);
-    velocity = Scale(velocity, 0.99f); // Drag
+    velocity = Scale(velocity, 0.99f); 
 
     p.previous_position = p.position;
     p.position.x += velocity.x + p.acceleration.x * deltaTime * deltaTime;
@@ -81,13 +81,9 @@ void ApplyTireFriction(Particle& wheel, Vector3 heading, float grip) {
     Vector3 vel = Subtract(wheel.position, wheel.previous_position);
     float forwardSpeed = Dot(vel, heading);
     Vector3 forwardVel = Scale(heading, forwardSpeed);
-    
-    // Calculate sliding sideways velocity
     Vector3 lateralVel = Subtract(vel, forwardVel);
     
-    // Kill sideways velocity based on tire grip
     lateralVel = Scale(lateralVel, 1.0f - grip);
-    
     Vector3 newVel = Add(forwardVel, lateralVel);
     wheel.previous_position = Subtract(wheel.position, newVel);
 }
@@ -99,7 +95,6 @@ void ApplySpringForce(Spring& spring, float deltaTime) {
     Vector3 dir = Normalize(Subtract(spring.p2->position, spring.p1->position));
     float displacement = current_distance - spring.rest_length;
 
-    // Metal crumples, but suspension springs do not!
     if (!spring.isSuspension) {
         float yield_point = 0.4f; 
         if (std::abs(displacement) > yield_point) {
@@ -125,26 +120,28 @@ void HandleObstacleCollision(Particle& p, const Obstacle& obs) {
         p.position.y > obs.minBounds.y && p.position.y < obs.maxBounds.y &&
         p.position.z > obs.minBounds.z && p.position.z < obs.maxBounds.z) {
         
-        float distToMinX = p.position.x - obs.minBounds.x;
-        float distToMaxX = obs.maxBounds.x - p.position.x;
-        float distToMinY = p.position.y - obs.minBounds.y;
-        float distToMaxY = obs.maxBounds.y - p.position.y;
-        float distToMinZ = p.position.z - obs.minBounds.z;
-        float distToMaxZ = obs.maxBounds.z - p.position.z;
+        float distToMinX = std::abs(p.position.x - obs.minBounds.x);
+        float distToMaxX = std::abs(obs.maxBounds.x - p.position.x);
+        float distToMinY = std::abs(p.position.y - obs.minBounds.y);
+        float distToMaxY = std::abs(obs.maxBounds.y - p.position.y);
+        float distToMinZ = std::abs(p.position.z - obs.minBounds.z);
+        float distToMaxZ = std::abs(obs.maxBounds.z - p.position.z);
 
         float minDist = std::min({distToMinX, distToMaxX, distToMinY, distToMaxY, distToMinZ, distToMaxZ});
 
-        if (minDist == distToMinX) { p.position.x = obs.minBounds.x; p.previous_position.x = p.position.x; }
-        else if (minDist == distToMaxX) { p.position.x = obs.maxBounds.x; p.previous_position.x = p.position.x; }
-        else if (minDist == distToMinY) { p.position.y = obs.minBounds.y; p.previous_position.y = p.position.y; }
-        else if (minDist == distToMaxY) { p.position.y = obs.maxBounds.y; p.previous_position.y = p.position.y; }
-        else if (minDist == distToMinZ) { p.position.z = obs.minBounds.z; p.previous_position.z = p.position.z; }
-        else if (minDist == distToMaxZ) { p.position.z = obs.maxBounds.z; p.previous_position.z = p.position.z; }
+        if (minDist == distToMinX) p.position.x = obs.minBounds.x;
+        else if (minDist == distToMaxX) p.position.x = obs.maxBounds.x;
+        else if (minDist == distToMinY) p.position.y = obs.minBounds.y;
+        else if (minDist == distToMaxY) p.position.y = obs.maxBounds.y;
+        else if (minDist == distToMinZ) p.position.z = obs.minBounds.z;
+        else if (minDist == distToMaxZ) p.position.z = obs.maxBounds.z;
+        
+        p.previous_position = p.position;
     }
 }
 
 // ==========================================
-// 4. LOADERS & THE SUSPENSION WEB
+// 4. LOADERS
 // ==========================================
 void CreateSpring(std::vector<Spring>& springs, Particle& p1, Particle& p2, float stiffness, float damping, bool isSusp) {
     springs.push_back({&p1, &p2, Distance(p1.position, p2.position), stiffness, damping, isSusp});
@@ -183,10 +180,7 @@ void LoadWheelsAndSuspension(const char* fileName, std::vector<Particle>& wheels
             wheels.push_back({pos, pos, {0,0,0}, 4.0f, true}); 
         }
     }
-    
-    // THE SUSPENSION WEB: Fixes the spaghetti wheels!
-    // We connect each wheel to EVERY cage particle. This locks it perfectly in the center.
-    float suspStiffness = 600.0f; // Lowered because we have ~20 springs pulling instead of 4
+    float suspStiffness = 600.0f;
     float suspDamping = 30.0f;
     for (auto& w : wheels) {
         for (size_t i = 0; i < cage.size(); i++) {
@@ -254,7 +248,7 @@ void BindSkinToCage(std::vector<VisualVertex>& visualVertices, const std::vector
 // 5. MAIN ENGINE LOOP
 // ==========================================
 int main() {
-    InitWindow(1024, 768, "Vortex Engine V2.3 - The Suspension Web");
+    InitWindow(1024, 768, "Vortex Engine V2.4 - Fixed Steering Visuals");
     SetTargetFPS(60);
 
     Camera3D camera = { 0 };
@@ -275,10 +269,10 @@ int main() {
     
     LoadPhysicsCage("cage.obj", cageParticles, allSprings, 600.0f, spawnPoint);
     LoadWheelsAndSuspension("wheels.obj", wheels, cageParticles, allSprings, spawnPoint);
-    
     LoadVisualSkin("Car.obj", carSkin, carIndices, spawnPoint);
     BindSkinToCage(carSkin, cageParticles);
 
+    // Identify Front/Rear
     std::vector<int> frontWheels, rearWheels;
     if (wheels.size() == 4) {
         std::vector<std::pair<float, int>> zSort;
@@ -288,13 +282,15 @@ int main() {
         frontWheels.push_back(zSort[2].second); frontWheels.push_back(zSort[3].second);
     }
 
-    // THE CLASSIC PILLAR (Placed directly in your driving path)
     Obstacle pillar = { {-2.0f, 0.0f, -15.0f}, {2.0f, 10.0f, -11.0f}, GRAY };
 
-    float gravity = -15.0f; 
+    float gravity = -25.0f; 
     float wheelRadius = 0.4f; 
-    float enginePower = 1500.0f;
-    float steeringAngle = 0.0f;
+    float maxEnginePower = 1500.0f;
+
+    // INPUT SMOOTHING VARIABLES (Inertia)
+    float currentGas = 0.0f;
+    float currentSteering = 0.0f;
 
     while (!WindowShouldClose()) {
         float dt = GetFrameTime();
@@ -308,26 +304,29 @@ int main() {
         Vector3 carRight = Normalize(Cross(tempUp, carForward));
         Vector3 carUp = Cross(carForward, carRight);
 
-        // --- INPUT ---
-        float gas = 0.0f;
-        if (IsKeyDown(KEY_W)) gas = enginePower;
-        if (IsKeyDown(KEY_S)) gas = -enginePower; 
+        // --- SMOOTHED INPUTS ---
+        float targetGas = 0.0f;
+        if (IsKeyDown(KEY_W)) targetGas = maxEnginePower;
+        if (IsKeyDown(KEY_S)) targetGas = -maxEnginePower; 
+        
+        // Lerp gas for weight feel (0.1f speed)
+        currentGas += (targetGas - currentGas) * 5.0f * dt;
 
-        if (IsKeyDown(KEY_D)) steeringAngle += 2.0f * dt;
-        else if (IsKeyDown(KEY_A)) steeringAngle -= 2.0f * dt;
-        else steeringAngle *= 0.8f; 
-        if (steeringAngle > 0.6f) steeringAngle = 0.6f;
-        if (steeringAngle < -0.6f) steeringAngle = -0.6f;
+        float targetSteer = 0.0f;
+        if (IsKeyDown(KEY_A)) targetSteer = 0.6f;  // Turn Left
+        else if (IsKeyDown(KEY_D)) targetSteer = -0.6f; // Turn Right
+        
+        // Lerp steering for handling feel
+        currentSteering += (targetSteer - currentSteering) * 8.0f * dt;
 
-        // Local Steering Math: Works perfectly even if doing a barrel roll!
-        Vector3 frontWheelHeading = Add(Scale(carForward, std::cos(steeringAngle)), Scale(carRight, -std::sin(steeringAngle)));
+        // Physics uses currentSteering
+        Vector3 frontWheelHeading = Add(Scale(carForward, std::cos(currentSteering)), Scale(carRight, std::sin(currentSteering)));
 
         int subSteps = 10; 
         float subDt = dt / subSteps;
 
         // --- PHYSICS SOLVER ---
         for (int i = 0; i < subSteps; i++) {
-            
             for (auto& p : cageParticles) p.acceleration.y += gravity;
             for (auto& w : wheels) w.acceleration.y += gravity;
 
@@ -347,29 +346,26 @@ int main() {
                     UpdateParticle(wheels[wIdx], subDt);
                     HandleObstacleCollision(wheels[wIdx], pillar); 
                     
-                    // THE UFO FIX: ONLY apply engine force and steering grip IF touching the ground
                     if (wheels[wIdx].position.y <= wheelRadius + 0.1f) {
                         wheels[wIdx].position.y = wheelRadius;
                         wheels[wIdx].previous_position.y = wheels[wIdx].position.y; 
                         
                         Vector3 heading = (wIdx == frontWheels[0] || wIdx == frontWheels[1]) ? frontWheelHeading : carForward;
                         
-                        // Push the car forward
-                        wheels[wIdx].acceleration = Add(wheels[wIdx].acceleration, Scale(heading, gas));
+                        // Use smoothed gas
+                        wheels[wIdx].acceleration = Add(wheels[wIdx].acceleration, Scale(heading, currentGas));
                         
-                        // Apply Tire Grip (0.08 is perfect for arcade drifting without snapping springs)
                         ApplyTireFriction(wheels[wIdx], heading, 0.08f); 
                     }
                 }
             }
         }
 
-        // --- VISUAL UPDATE ---
         for (auto& vv : carSkin) {
             Vector3 rotatedOffset = Add(Add(Scale(carRight, vv.offset.x), Scale(carUp, vv.offset.y)), Scale(carForward, vv.offset.z));
             vv.position = Add(cageParticles[vv.boundParticleIndex].position, rotatedOffset);
         }
-
+        
         if (!cageParticles.empty()) {
             camera.target = cageParticles[0].position;
             camera.position = { cageParticles[0].position.x + 10.0f, 10.0f, cageParticles[0].position.z + 15.0f };
@@ -381,11 +377,9 @@ int main() {
             BeginMode3D(camera);
                 DrawGrid(40, 1.0f);
                 
-                // Draw The Classic Pillars
                 DrawCube({(pillar.minBounds.x + pillar.maxBounds.x)/2, (pillar.minBounds.y + pillar.maxBounds.y)/2, (pillar.minBounds.z + pillar.maxBounds.z)/2}, 
                          pillar.maxBounds.x - pillar.minBounds.x, pillar.maxBounds.y - pillar.minBounds.y, pillar.maxBounds.z - pillar.minBounds.z, pillar.color);
 
-                // Draw Wireframe Car
                 for (size_t i = 0; i < carIndices.size(); i += 3) {
                     Vector3 v1 = carSkin[carIndices[i]].position;
                     Vector3 v2 = carSkin[carIndices[i+1]].position;
@@ -395,11 +389,13 @@ int main() {
                     DrawLine3D(v3, v1, RED);
                 }
 
-                // Draw Steering Tires (Now using local rotation so they never look weird when flipped!)
+                // DRAW VISUAL WHEELS (The Fix Is Here)
                 for(size_t wIdx = 0; wIdx < wheels.size(); wIdx++) {
                     Vector3 axleDir = carRight;
                     if (wheels.size() == 4 && (wIdx == frontWheels[0] || wIdx == frontWheels[1])) {
-                        axleDir = Add(Scale(carRight, std::cos(steeringAngle)), Scale(carForward, std::sin(steeringAngle)));
+                        // VISUAL FIX: Use NEGATIVE steering for the visual rotation axis
+                        // This flips the visual rotation to match the physical turn
+                        axleDir = Add(Scale(carRight, std::cos(currentSteering)), Scale(carForward, std::sin(-currentSteering)));
                     }
                     
                     Vector3 offset = Scale(axleDir, 0.2f);
@@ -411,7 +407,7 @@ int main() {
 
             EndMode3D();
 
-            DrawText("Suspension Web Active! Wheels locked in place.", 10, 10, 20, DARKGRAY);
+            DrawText("Visual Steering Fixed + Smooth Controls.", 10, 10, 20, DARKGRAY);
             DrawFPS(10, 40);
         EndDrawing();
     }
