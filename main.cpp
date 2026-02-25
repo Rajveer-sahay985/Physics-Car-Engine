@@ -381,7 +381,7 @@ int main() {
             BeginMode3D(camera);
                 DrawGrid(40, 1.0f);
                 
-                // Draw The Classic Pillar
+                // Draw The Classic Pillars
                 DrawCube({(pillar.minBounds.x + pillar.maxBounds.x)/2, (pillar.minBounds.y + pillar.maxBounds.y)/2, (pillar.minBounds.z + pillar.maxBounds.z)/2}, 
                          pillar.maxBounds.x - pillar.minBounds.x, pillar.maxBounds.y - pillar.minBounds.y, pillar.maxBounds.z - pillar.minBounds.z, pillar.color);
 
