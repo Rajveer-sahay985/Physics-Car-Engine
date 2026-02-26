@@ -83,17 +83,23 @@ void ApplySpringForce(Spring& spring, float dt) {
     float displacement = dist - spring.rest_length;
 
     if (!spring.isSuspension) {
-        if (std::abs(displacement) > 0.08f) {
-            Vector3 v1 = Subtract(spring.p1->position, spring.p1->previous_position);
-            Vector3 v2 = Subtract(spring.p2->position, spring.p2->previous_position);
-            float impact = std::abs(Dot(Subtract(v2, v1), dir));
-            float crush  = displacement * 0.18f * (1.0f + impact * 40.0f);
-            if (std::abs(spring.rest_length + crush - spring.original_length) < spring.original_length * 0.65f) {
-                spring.rest_length += crush;
-                spring.damping = std::min(spring.damping + 0.1f, 25.0f);
-            }
+    Vector3 v1  = Subtract(spring.p1->position, spring.p1->previous_position);
+    Vector3 v2  = Subtract(spring.p2->position, spring.p2->previous_position);
+    float relVel = std::abs(Dot(Subtract(v2, v1), dir));
+
+    // relVel during normal driving ≈ 0.001–0.008
+    // relVel during a real crash   ≈ 0.05+
+    // Only permanently deform on violent impacts
+    if (relVel > 0.035f && std::abs(displacement) > 0.12f) {
+        float crush  = displacement * 0.30f;
+        float newLen = spring.rest_length + crush;
+        if (std::abs(newLen - spring.original_length) < spring.original_length * 0.55f) {
+            spring.rest_length  = newLen;   // permanent — no recovery
+            spring.damping      = std::min(spring.damping + 3.0f, 80.0f);
+            spring.stiffness    = std::max(spring.stiffness - 1.5f, 15.0f);
         }
     }
+}
 
     Vector3 v1 = Subtract(spring.p1->position, spring.p1->previous_position);
     Vector3 v2 = Subtract(spring.p2->position, spring.p2->previous_position);
@@ -145,7 +151,7 @@ void LoadPhysicsCage(const char* file, std::vector<Particle>& parts,
     for (size_t i = 0; i < parts.size(); i++)
         for (size_t j = i+1; j < parts.size(); j++)
             // FIX: Added more internal damping (8.0f) so the metal feels rigid
-            CreateSpring(springs, parts[i], parts[j], k, 8.0f, false); 
+            CreateSpring(springs, parts[i], parts[j], k, 80.0f, false);
 }
 
 void LoadWheelsAndSuspension(const char* file, std::vector<Particle>& wheels,
@@ -244,7 +250,7 @@ int main() {
 
 
    Vector3 spawnPoint = {0.0f, 3.0f, 5.0f};
-    LoadPhysicsCage("cage.obj", cageParticles, allSprings, 180.0f, spawnPoint);
+    LoadPhysicsCage("cage.obj", cageParticles, allSprings, 900.0f, spawnPoint);
     LoadWheelsAndSuspension("wheels.obj", wheels, cageParticles, allSprings, spawnPoint);
     LoadVisualSkin("Car.obj", carSkin, carIndices, spawnPoint);
     BindSkinToCage(carSkin, cageParticles);
@@ -398,7 +404,7 @@ int main() {
                 if (p.position.y < 0.2f) {
                     p.position.y = 0.2f;
                     Vector3 vel = Subtract(p.position, p.previous_position);
-                    if (vel.y < 0) vel.y *= -0.04f;  // 4% restitution — dead metal thud
+                   if (vel.y < 0) vel.y = 0.0f;  // 4% restitution — dead metal thud
                     vel.x *= 0.995f;
                     vel.z *= 0.995f;
                     p.previous_position = Subtract(p.position, vel);
