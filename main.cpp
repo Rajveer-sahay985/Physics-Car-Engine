@@ -250,8 +250,22 @@ int main() {
         frontWheels.push_back(fl); frontWheels.push_back(fr);
     }
 
-    Obstacle pillar = LoadObstacle("pillar.obj", {0.0f,  0.0f, 20.0f}, GRAY);
-    Obstacle floor  = LoadObstacle("floor.obj",  {0.0f,  0.0f,  0.0f}, LIGHTGRAY);
+    Obstacle pillar = LoadObstacle("pillar.obj", {0.0f, 0.0f, 20.0f}, GRAY);
+
+    // Bump obstacles for suspension testing
+    // Each bump.obj should be a sphere exported from Blender with Apply All Transforms
+    std::vector<Obstacle> bumps;
+    const char* bumpFiles[] = {"bump1.obj","bump2.obj","bump3.obj","bump4.obj","bump5.obj"};
+    Color bumpColors[] = {DARKGRAY, GRAY, DARKGRAY, GRAY, DARKGRAY};
+    for (int b = 0; b < 5; b++) {
+        if (FileExists(bumpFiles[b])) {
+            bumps.push_back(LoadObstacle(bumpFiles[b], {0.0f,0.0f,0.0f}, bumpColors[b]));
+        }
+    }
+
+
+
+
 
     float gravity=-15, wheelRadius=0.4f, maxEnginePower=2000;
     float currentGas=0, currentSteering=0, visualWheelRot=0;
@@ -310,7 +324,7 @@ int main() {
                         (p.position.y - p.previous_position.y) * 0.3f;
                 }
                 HandleObstacleCollision(p, pillar);
-                HandleObstacleCollision(p, floor);
+                for (auto& bump : bumps) HandleObstacleCollision(p, bump);
             }
 
             if (wheels.size() == 4) {
@@ -318,11 +332,32 @@ int main() {
                     UpdateParticle(wheels[wIdx], subDt);
                     HandleObstacleCollision(wheels[wIdx], pillar);
 
+                    // Check if wheel is ON a bump — if so, skip flat ground snap
+                    bool onBump = false;
+                    for (auto& bump : bumps) {
+                        // A wheel is "on" a bump if it's sitting above the bump's top surface
+                        if (wheels[wIdx].position.x > bump.minBounds.x && wheels[wIdx].position.x < bump.maxBounds.x &&
+                            wheels[wIdx].position.z > bump.minBounds.z && wheels[wIdx].position.z < bump.maxBounds.z &&
+                            wheels[wIdx].position.y < bump.maxBounds.y + wheelRadius + 0.15f) {
+                            onBump = true;
+                            // Push wheel up to top of bump + wheelRadius
+                            float bumpSurface = bump.maxBounds.y + wheelRadius;
+                            if (wheels[wIdx].position.y < bumpSurface) {
+                                wheels[wIdx].position.y = bumpSurface;
+                                wheels[wIdx].previous_position.y = wheels[wIdx].position.y;
+                            }
+                        }
+                    }
 
-                    if (wheels[wIdx].position.y <= wheelRadius + 0.1f) {
+                    // Flat ground snap — only when NOT on a bump
+                    if (!onBump && wheels[wIdx].position.y <= wheelRadius + 0.1f) {
                         wheels[wIdx].position.y = wheelRadius;
                         wheels[wIdx].previous_position.y = wheels[wIdx].position.y;
+                    }
 
+                    // Apply drive force & friction whenever wheel is grounded (flat OR bump)
+                    bool isGrounded = onBump || (wheels[wIdx].position.y <= wheelRadius + 0.15f);
+                    if (isGrounded) {
                         Vector3 heading = (wIdx==frontWheels[0]||wIdx==frontWheels[1])
                                           ? fwdHeading : carForward;
                         float grip = 0.75f;
@@ -370,6 +405,7 @@ int main() {
             ClearBackground(SKYBLUE);
             BeginMode3D(camera);
                 DrawGrid(40, 1.0f);
+                DrawPlane({0.0f, 0.0f, 0.0f}, {200.0f, 200.0f}, LIGHTGRAY);
 
                 if (pillar.hasModel)
                     DrawModel(pillar.model, pillar.position, 1.0f, pillar.color);
@@ -380,9 +416,10 @@ int main() {
                               pillar.maxBounds.x-pillar.minBounds.x,
                               pillar.maxBounds.y-pillar.minBounds.y,
                               pillar.maxBounds.z-pillar.minBounds.z, pillar.color);
+                // Draw bump obstacles
+                for (auto& bump : bumps)
+                    DrawModel(bump.model, bump.position, 1.0f, bump.color);
 
-                if (floor.hasModel)
-                    DrawModel(floor.model, floor.position, 1.0f, floor.color);
 
                 rlBegin(RL_TRIANGLES);
                 for (size_t i=0; i<carIndices.size(); i+=3) {
@@ -441,7 +478,7 @@ int main() {
 
     for (int i=0;i<4;i++) UnloadModel(wheelModels[i]);
     UnloadModel(pillar.model);
-    UnloadModel(floor.model);
+    for (auto& bump : bumps) UnloadModel(bump.model);
     CloseWindow();
     return 0;
 }

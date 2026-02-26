@@ -1,6 +1,6 @@
 # Blender 5.0.1
 # www.blender.org
-mtllib floor.mtl
+mtllib bump2.mtl
 o Sphere
 v 0.000000 -0.789310 -36.018055
 v 0.000000 -0.233740 -36.186584
