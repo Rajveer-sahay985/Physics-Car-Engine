@@ -316,13 +316,10 @@ int main() {
             if (wheels.size() == 4) {
                 for (int wIdx=0; wIdx<4; wIdx++) {
                     UpdateParticle(wheels[wIdx], subDt);
-
-                    // Obstacles FIRST — must happen before ground snap
                     HandleObstacleCollision(wheels[wIdx], pillar);
                     HandleObstacleCollision(wheels[wIdx], floor);
 
-                    // Ground snap — only if below ground (not overriding obstacle lift)
-                    if (wheels[wIdx].position.y < wheelRadius) {
+                    if (wheels[wIdx].position.y <= wheelRadius) {
                         wheels[wIdx].position.y = wheelRadius;
                         wheels[wIdx].previous_position.y = wheels[wIdx].position.y;
 
@@ -345,10 +342,10 @@ int main() {
             }
         }
 
+        // Wheel spin — from working git version
         if (wheels.size() == 4) {
-            Vector3 vel = Subtract(wheels[rl].position, wheelStartPos[rl]);
-            float distTraveled = Dot(vel, carForward);
-            visualWheelRot += distTraveled / wheelRadius;
+            float sd = Dot(Subtract(wheels[rl].position, wheelStartPos[rl]), carForward);
+            visualWheelRot += sd / wheelRadius;
         }
 
         for (auto& vv : carSkin) {
@@ -412,23 +409,23 @@ int main() {
                 }
                 rlEnd();
 
-               auto DrawOneWheel = [&](Model& m, int physIdx, float steerAngle) {
-                float carAngle = atan2(carForward.x, carForward.z);
+                // ── WHEEL RENDERING (restored from working git version) ──
+                auto DrawOneWheel = [&](Model& m, int physIdx, float angle) {
+                    Matrix matScale = MatrixScale(1.0f, 1.0f, 1.0f);
+                    Matrix matTrans = MatrixTranslate(wheels[physIdx].position.x,
+                                                      wheels[physIdx].position.y,
+                                                      wheels[physIdx].position.z);
+                    Matrix matRot   = MatrixMultiply(MatrixRotateX(visualWheelRot),
+                                                     MatrixRotateY(angle));
+                    float  carAngle = atan2(carForward.x, carForward.z);
+                    Matrix matBody  = MatrixRotateY(carAngle);
 
-                // m.transform only handles ROTATION (applied to local mesh vertices)
-                // Translation is handled by DrawModel's position parameter
-                Matrix spin    = MatrixRotateX(visualWheelRot);
-                Matrix steer   = MatrixRotateY(steerAngle);
-                Matrix body    = MatrixRotateY(carAngle);
-
-                // In raylib: MatrixMultiply(A,B) = B*A (B applied first)
-                // We want: body first, then steer, then spin
-                m.transform = MatrixMultiply(spin, MatrixMultiply(steer, body));
-
-                // Pass world position through DrawModel, NOT the matrix
-                Vector3 wheelPos = wheels[physIdx].position;
-                DrawModel(m, wheelPos, 1.0f, WHITE);
-            };
+                    // EXACT matrix order from working git version
+                    m.transform = MatrixMultiply(matScale,
+                                  MatrixMultiply(matRot,
+                                  MatrixMultiply(matBody, matTrans)));
+                    DrawModel(m, {0,0,0}, 1.0f, WHITE);
+                };
 
                 DrawOneWheel(wheelModels[0], fl, -currentSteering);
                 DrawOneWheel(wheelModels[1], fr, -currentSteering);
