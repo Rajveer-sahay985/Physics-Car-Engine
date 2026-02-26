@@ -62,6 +62,9 @@ struct Obstacle {
     Vector3 minBounds;
     Vector3 maxBounds;
     Color color;
+    Model model;
+    bool hasModel;
+    Vector3 position;
 };
 
 int pFront = 0, pBack = 0, pTop = 0; 
@@ -261,6 +264,35 @@ void BindSkinToCage(std::vector<VisualVertex>& visualVertices, const std::vector
     }
 }
 
+// Loads an OBJ from Blender and auto-calculates its collision bounds
+Obstacle LoadObstacle(const char* fileName, Vector3 position, Color color) {
+    Obstacle obs;
+    obs.position = position;
+    obs.color    = color;
+    obs.model    = LoadModel(fileName);
+    obs.hasModel = true;
+
+    // Auto-compute AABB by scanning every vertex in the mesh
+    float minX =  99999, minY =  99999, minZ =  99999;
+    float maxX = -99999, maxY = -99999, maxZ = -99999;
+
+    Mesh& mesh = obs.model.meshes[0];
+    for (int i = 0; i < mesh.vertexCount; i++) {
+        // vertices are stored as flat float array: x,y,z,x,y,z,...
+        float x = mesh.vertices[i*3 + 0] + position.x;
+        float y = mesh.vertices[i*3 + 1] + position.y;
+        float z = mesh.vertices[i*3 + 2] + position.z;
+
+        if (x < minX) minX = x;  if (x > maxX) maxX = x;
+        if (y < minY) minY = y;  if (y > maxY) maxY = y;
+        if (z < minZ) minZ = z;  if (z > maxZ) maxZ = z;
+    }
+
+    obs.minBounds = { minX, minY, minZ };
+    obs.maxBounds = { maxX, maxY, maxZ };
+    return obs;
+}
+
 // ==========================================
 // 5. MAIN ENGINE LOOP
 // ==========================================
@@ -312,8 +344,7 @@ int main() {
         frontWheels.push_back(fl); frontWheels.push_back(fr);
     }
 
-    // Larger Pillar for reliable crash testing
-    Obstacle pillar = { {-3.0f, 0.0f, 20.0f}, {3.0f, 10.0f, 25.0f}, GRAY };
+    Obstacle pillar = LoadObstacle("pillar.obj", {0.0f, 0.0f, 20.0f}, GRAY);
 
     float gravity = -15.0f; 
     float wheelRadius = 0.4f; 
@@ -477,8 +508,17 @@ int main() {
             BeginMode3D(camera);
                 DrawGrid(40, 1.0f);
                 
-                DrawCube({(pillar.minBounds.x + pillar.maxBounds.x)/2, (pillar.minBounds.y + pillar.maxBounds.y)/2, (pillar.minBounds.z + pillar.maxBounds.z)/2}, 
-                         pillar.maxBounds.x - pillar.minBounds.x, pillar.maxBounds.y - pillar.minBounds.y, pillar.maxBounds.z - pillar.minBounds.z, pillar.color);
+               if (pillar.hasModel)
+                    DrawModel(pillar.model, pillar.position, 1.0f, pillar.color);
+                else
+                    DrawCube(
+                        {(pillar.minBounds.x + pillar.maxBounds.x) / 2.0f,
+                         (pillar.minBounds.y + pillar.maxBounds.y) / 2.0f,
+                         (pillar.minBounds.z + pillar.maxBounds.z) / 2.0f},
+                        pillar.maxBounds.x - pillar.minBounds.x,
+                        pillar.maxBounds.y - pillar.minBounds.y,
+                        pillar.maxBounds.z - pillar.minBounds.z, pillar.color);
+
 
                 // HIGH PERFORMANCE BATCH RENDERING (Saves FPS)
                 rlBegin(RL_TRIANGLES);
@@ -541,6 +581,7 @@ int main() {
     }
 
     for(int i=0; i<4; i++) UnloadModel(wheelModels[i]);
+    UnloadModel(pillar.model);
     CloseWindow();
     return 0;
 }
