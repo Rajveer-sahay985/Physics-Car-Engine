@@ -49,6 +49,15 @@ struct Obstacle {
     Vector3 position;
 };
 
+// Sphere-specific collision — much more accurate than AABB for round bumps
+struct SphereObstacle {
+    Vector3 center;
+    float radius;
+    Color color;
+    Model model;
+    Vector3 position;
+};
+
 int pFront = 0, pBack = 0, pTop = 0;
 
 void UpdateParticle(Particle& p, float dt) {
@@ -252,14 +261,37 @@ int main() {
 
     Obstacle pillar = LoadObstacle("pillar.obj", {0.0f, 0.0f, 20.0f}, GRAY);
 
-    // Bump obstacles for suspension testing
-    // Each bump.obj should be a sphere exported from Blender with Apply All Transforms
-    std::vector<Obstacle> bumps;
+    // Sphere bump obstacles — using true sphere collision, not AABB
+    std::vector<SphereObstacle> bumps;
     const char* bumpFiles[] = {"bump1.obj","bump2.obj","bump3.obj","bump4.obj","bump5.obj"};
     Color bumpColors[] = {DARKGRAY, GRAY, DARKGRAY, GRAY, DARKGRAY};
     for (int b = 0; b < 5; b++) {
         if (FileExists(bumpFiles[b])) {
-            bumps.push_back(LoadObstacle(bumpFiles[b], {0.0f,0.0f,0.0f}, bumpColors[b]));
+            // Load mesh to compute true center and radius from vertex data
+            Model m = LoadModel(bumpFiles[b]);
+            Mesh& mesh = m.meshes[0];
+            Vector3 cen = {0,0,0};
+            for (int i = 0; i < mesh.vertexCount; i++) {
+                cen.x += mesh.vertices[i*3+0];
+                cen.y += mesh.vertices[i*3+1];
+                cen.z += mesh.vertices[i*3+2];
+            }
+            cen.x /= mesh.vertexCount;
+            cen.y /= mesh.vertexCount;
+            cen.z /= mesh.vertexCount;
+            // Radius = max distance from center to any vertex
+            float rad = 0.0f;
+            for (int i = 0; i < mesh.vertexCount; i++) {
+                float dx = mesh.vertices[i*3+0] - cen.x;
+                float dy = mesh.vertices[i*3+1] - cen.y;
+                float dz = mesh.vertices[i*3+2] - cen.z;
+                float d = std::sqrt(dx*dx + dy*dy + dz*dz);
+                if (d > rad) rad = d;
+            }
+            SphereObstacle so;
+            so.center = cen; so.radius = rad;
+            so.color = bumpColors[b]; so.model = m; so.position = {0,0,0};
+            bumps.push_back(so);
         }
     }
 
@@ -324,7 +356,7 @@ int main() {
                         (p.position.y - p.previous_position.y) * 0.3f;
                 }
                 HandleObstacleCollision(p, pillar);
-                for (auto& bump : bumps) HandleObstacleCollision(p, bump);
+                // (sphere bumps only affect wheels, not cage body particles)
             }
 
             if (wheels.size() == 4) {
@@ -332,20 +364,24 @@ int main() {
                     UpdateParticle(wheels[wIdx], subDt);
                     HandleObstacleCollision(wheels[wIdx], pillar);
 
-                    // Check if wheel is ON a bump — if so, skip flat ground snap
+                    // TRUE SPHERE COLLISION for bumps
                     bool onBump = false;
                     for (auto& bump : bumps) {
-                        // A wheel is "on" a bump if it's sitting above the bump's top surface
-                        if (wheels[wIdx].position.x > bump.minBounds.x && wheels[wIdx].position.x < bump.maxBounds.x &&
-                            wheels[wIdx].position.z > bump.minBounds.z && wheels[wIdx].position.z < bump.maxBounds.z &&
-                            wheels[wIdx].position.y < bump.maxBounds.y + wheelRadius + 0.15f) {
-                            onBump = true;
-                            // Push wheel up to top of bump + wheelRadius
-                            float bumpSurface = bump.maxBounds.y + wheelRadius;
-                            if (wheels[wIdx].position.y < bumpSurface) {
-                                wheels[wIdx].position.y = bumpSurface;
-                                wheels[wIdx].previous_position.y = wheels[wIdx].position.y;
-                            }
+                        Vector3 wpos = wheels[wIdx].position;
+                        float dx = wpos.x - bump.center.x;
+                        float dy = wpos.y - bump.center.y;
+                        float dz = wpos.z - bump.center.z;
+                        float dist = std::sqrt(dx*dx + dy*dy + dz*dz);
+                        float minDist = bump.radius + wheelRadius;
+                        if (dist < minDist && dist > 0.001f) {
+                            // Push wheel out along the sphere normal
+                            float nx = dx/dist, ny = dy/dist, nz = dz/dist;
+                            float overlap = minDist - dist;
+                            wheels[wIdx].position.x += nx * overlap;
+                            wheels[wIdx].position.y += ny * overlap;
+                            wheels[wIdx].position.z += nz * overlap;
+                            wheels[wIdx].previous_position = wheels[wIdx].position;
+                            if (ny > 0.3f) onBump = true; // wheel is on TOP of sphere
                         }
                     }
 
@@ -416,7 +452,7 @@ int main() {
                               pillar.maxBounds.x-pillar.minBounds.x,
                               pillar.maxBounds.y-pillar.minBounds.y,
                               pillar.maxBounds.z-pillar.minBounds.z, pillar.color);
-                // Draw bump obstacles
+                // Draw sphere bumps
                 for (auto& bump : bumps)
                     DrawModel(bump.model, bump.position, 1.0f, bump.color);
 
