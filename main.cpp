@@ -138,12 +138,14 @@ void LoadPhysicsCage(const char* file, std::vector<Particle>& parts,
         std::istringstream iss(line); std::string pre; iss >> pre;
         if (pre == "v") {
             Vector3 p; iss >> p.x >> p.y >> p.z;
-            parts.push_back({Add(p, offset), Add(p, offset), {0,0,0}, 1.0f, false});
+            // FIX: Doubled chassis mass for a heavy, grounded feel
+            parts.push_back({Add(p, offset), Add(p, offset), {0,0,0}, 2.0f, false});
         }
     }
     for (size_t i = 0; i < parts.size(); i++)
         for (size_t j = i+1; j < parts.size(); j++)
-            CreateSpring(springs, parts[i], parts[j], k, 4.0f, false);
+            // FIX: Added more internal damping (8.0f) so the metal feels rigid
+            CreateSpring(springs, parts[i], parts[j], k, 8.0f, false); 
 }
 
 void LoadWheelsAndSuspension(const char* file, std::vector<Particle>& wheels,
@@ -155,12 +157,14 @@ void LoadWheelsAndSuspension(const char* file, std::vector<Particle>& wheels,
         std::istringstream iss(line); std::string pre; iss >> pre;
         if (pre == "v") {
             Vector3 p; iss >> p.x >> p.y >> p.z;
-            wheels.push_back({Add(p,offset), Add(p,offset), {0,0,0}, 4.0f, true});
+            // FIX: Lowered wheel mass so the heavy chassis dictates the movement
+            wheels.push_back({Add(p,offset), Add(p,offset), {0,0,0}, 0.5f, true});
         }
     }
     for (auto& w : wheels)
         for (size_t i = 0; i < cage.size(); i++)
-            CreateSpring(springs, w, cage[i], 600.0f, 30.0f, true);
+            // FIX: Lower stiffness but much higher damping so it absorbs shocks instead of bouncing
+            CreateSpring(springs, w, cage[i], 400.0f, 45.0f, true); 
 }
 
 void LoadVisualSkin(const char* file, std::vector<VisualVertex>& verts,
@@ -299,9 +303,9 @@ int main() {
 
 
 
-    float gravity=-15, wheelRadius=0.4f, maxEnginePower=2000;
+    float gravity=-15, wheelRadius=0.4f, maxEnginePower=20000;
     float currentGas=0, currentSteering=0, visualWheelRot=0;
-    float camYaw=0, camPitch=0.4f, camDist=12;
+    float camYaw=0, camPitch=4.8f, camDist=8;
     DisableCursor();
 
     while (!WindowShouldClose()) {
@@ -346,15 +350,38 @@ int main() {
         for (int step = 0; step < subSteps; step++) {
             for (auto& p : cageParticles) p.acceleration.y += gravity;
             for (auto& w : wheels)        w.acceleration.y += gravity;
-            for (auto& s : allSprings)    ApplySpringForce(s, subDt);
+            
+            // NEW: Spring logic with hard suspension constraints
+            for (auto& s : allSprings) {
+                ApplySpringForce(s, subDt);
+                
+                // Hard constraints so wheels don't detach
+                if (s.isSuspension) {
+                    float dist = Distance(s.p1->position, s.p2->position);
+                    float maxLen = s.original_length * 1.4f; // Max stretch
+                    float minLen = s.original_length * 0.5f; // Max compression
+                    
+                    if (dist > maxLen || dist < minLen) {
+                        float target = (dist > maxLen) ? maxLen : minLen;
+                        Vector3 dir = Normalize(Subtract(s.p2->position, s.p1->position));
+                        float diff = dist - target;
+                        
+                        // FIX: ONLY push the wheel (p1) back. Leave the chassis (p2) alone!
+                        s.p1->position = Add(s.p1->position, Scale(dir, diff));
+                    }
+                }
+            }
 
             for (auto& p : cageParticles) {
                 UpdateParticle(p, subDt);
+                
+                // REVERTED: Removed the heavy friction drag, back to original bounce
                 if (p.position.y < 0.2f) {
                     p.position.y = 0.2f;
                     p.previous_position.y = p.position.y +
                         (p.position.y - p.previous_position.y) * 0.3f;
                 }
+                
                 HandleObstacleCollision(p, pillar);
                 
                 // FIX: Apply sphere bumps to cage particles (Car Body)
@@ -419,19 +446,23 @@ int main() {
                         wheels[wIdx].previous_position.y = wheels[wIdx].position.y;
                     }
 
-                    // Apply drive force
+                    // REVERTED: Back to All-Wheel Drive (AWD) for original speed and turning
                     bool isGrounded = onBump || (wheels[wIdx].position.y <= wheelRadius + 0.15f);
+                    
                     if (isGrounded) {
                         Vector3 heading = (wIdx==frontWheels[0]||wIdx==frontWheels[1]) ? fwdHeading : carForward;
                         float grip = 0.75f;
+                        
                         if (handbrake) {
-                            grip = (wIdx==rearWheels[0]||wIdx==rearWheels[1]) ? 0.02f : 0.6f;
+                            grip = (wIdx == rearWheels[0] || wIdx == rearWheels[1]) ? 0.02f : 0.6f;
                             Vector3 vel = Subtract(wheels[wIdx].position, wheels[wIdx].previous_position);
-                            float fwd   = Dot(vel, carForward);
+                            float fwd = Dot(vel, carForward);
                             wheels[wIdx].acceleration = Add(wheels[wIdx].acceleration, Scale(carForward, -fwd*0.6f));
                         } else {
+                            // Apply gas to ALL wheels like before
                             wheels[wIdx].acceleration = Add(wheels[wIdx].acceleration, Scale(heading, currentGas));
                         }
+                        
                         ApplyTireFriction(wheels[wIdx], heading, grip);
                     }
                 }
