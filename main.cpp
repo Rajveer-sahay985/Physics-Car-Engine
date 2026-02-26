@@ -310,7 +310,7 @@ int main() {
 
         Vector2 md = GetMouseDelta();
         camYaw   -= md.x * 0.004f;
-        camPitch -= md.y * 0.004f;
+        camPitch += md.y * 0.004f;
         camPitch  = Clamp(camPitch, 0.05f, 1.4f);
         camDist  -= GetMouseWheelMove() * 1.5f;
         camDist   = Clamp(camDist, 4.0f, 30.0f);
