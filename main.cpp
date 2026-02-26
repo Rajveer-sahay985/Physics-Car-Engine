@@ -356,7 +356,28 @@ int main() {
                         (p.position.y - p.previous_position.y) * 0.3f;
                 }
                 HandleObstacleCollision(p, pillar);
-                // (sphere bumps only affect wheels, not cage body particles)
+                
+                // FIX: Apply sphere bumps to cage particles (Car Body)
+                for (auto& bump : bumps) {
+                    Vector3 dx = Subtract(p.position, bump.center);
+                    float dist = std::sqrt(dx.x*dx.x + dx.y*dx.y + dx.z*dx.z);
+                    float minDist = bump.radius + 0.15f; // Slight padding for the body
+                    if (dist < minDist && dist > 0.001f) {
+                        float nx = dx.x/dist, ny = dx.y/dist, nz = dx.z/dist;
+                        float overlap = minDist - dist;
+
+                        Vector3 vel = Subtract(p.position, p.previous_position);
+                        float vDotN = vel.x*nx + vel.y*ny + vel.z*nz;
+                        if (vDotN < 0) {
+                            vel.x -= vDotN * nx; vel.y -= vDotN * ny; vel.z -= vDotN * nz;
+                        }
+
+                        p.position.x += nx * overlap; p.position.y += ny * overlap; p.position.z += nz * overlap;
+                        p.previous_position.x = p.position.x - vel.x;
+                        p.previous_position.y = p.position.y - vel.y;
+                        p.previous_position.z = p.position.z - vel.z;
+                    }
+                }
             }
 
             if (wheels.size() == 4) {
@@ -364,48 +385,52 @@ int main() {
                     UpdateParticle(wheels[wIdx], subDt);
                     HandleObstacleCollision(wheels[wIdx], pillar);
 
-                    // TRUE SPHERE COLLISION for bumps
                     bool onBump = false;
                     for (auto& bump : bumps) {
-                        Vector3 wpos = wheels[wIdx].position;
-                        float dx = wpos.x - bump.center.x;
-                        float dy = wpos.y - bump.center.y;
-                        float dz = wpos.z - bump.center.z;
-                        float dist = std::sqrt(dx*dx + dy*dy + dz*dz);
+                        Vector3 dx = Subtract(wheels[wIdx].position, bump.center);
+                        float dist = std::sqrt(dx.x*dx.x + dx.y*dx.y + dx.z*dx.z);
                         float minDist = bump.radius + wheelRadius;
                         if (dist < minDist && dist > 0.001f) {
-                            // Push wheel out along the sphere normal
-                            float nx = dx/dist, ny = dy/dist, nz = dz/dist;
+                            float nx = dx.x/dist, ny = dx.y/dist, nz = dx.z/dist;
                             float overlap = minDist - dist;
+
+                            // FIX: Preserve momentum, remove only normal velocity
+                            Vector3 vel = Subtract(wheels[wIdx].position, wheels[wIdx].previous_position);
+                            float vDotN = vel.x*nx + vel.y*ny + vel.z*nz;
+                            if (vDotN < 0) {
+                                vel.x -= vDotN * nx; vel.y -= vDotN * ny; vel.z -= vDotN * nz;
+                            }
+
                             wheels[wIdx].position.x += nx * overlap;
                             wheels[wIdx].position.y += ny * overlap;
                             wheels[wIdx].position.z += nz * overlap;
-                            wheels[wIdx].previous_position = wheels[wIdx].position;
-                            if (ny > 0.3f) onBump = true; // wheel is on TOP of sphere
+                            
+                            wheels[wIdx].previous_position.x = wheels[wIdx].position.x - vel.x;
+                            wheels[wIdx].previous_position.y = wheels[wIdx].position.y - vel.y;
+                            wheels[wIdx].previous_position.z = wheels[wIdx].position.z - vel.z;
+
+                            if (ny > 0.3f) onBump = true; 
                         }
                     }
 
-                    // Flat ground snap — only when NOT on a bump
+                    // Flat ground snap
                     if (!onBump && wheels[wIdx].position.y <= wheelRadius + 0.1f) {
                         wheels[wIdx].position.y = wheelRadius;
                         wheels[wIdx].previous_position.y = wheels[wIdx].position.y;
                     }
 
-                    // Apply drive force & friction whenever wheel is grounded (flat OR bump)
+                    // Apply drive force
                     bool isGrounded = onBump || (wheels[wIdx].position.y <= wheelRadius + 0.15f);
                     if (isGrounded) {
-                        Vector3 heading = (wIdx==frontWheels[0]||wIdx==frontWheels[1])
-                                          ? fwdHeading : carForward;
+                        Vector3 heading = (wIdx==frontWheels[0]||wIdx==frontWheels[1]) ? fwdHeading : carForward;
                         float grip = 0.75f;
                         if (handbrake) {
                             grip = (wIdx==rearWheels[0]||wIdx==rearWheels[1]) ? 0.02f : 0.6f;
                             Vector3 vel = Subtract(wheels[wIdx].position, wheels[wIdx].previous_position);
                             float fwd   = Dot(vel, carForward);
-                            wheels[wIdx].acceleration = Add(wheels[wIdx].acceleration,
-                                                            Scale(carForward, -fwd*0.6f));
+                            wheels[wIdx].acceleration = Add(wheels[wIdx].acceleration, Scale(carForward, -fwd*0.6f));
                         } else {
-                            wheels[wIdx].acceleration = Add(wheels[wIdx].acceleration,
-                                                            Scale(heading, currentGas));
+                            wheels[wIdx].acceleration = Add(wheels[wIdx].acceleration, Scale(heading, currentGas));
                         }
                         ApplyTireFriction(wheels[wIdx], heading, grip);
                     }
@@ -482,7 +507,7 @@ int main() {
                 }
                 rlEnd();
 
-                // ── WHEEL RENDERING (restored from working git version) ──
+                // ── WHEEL RENDERING ──
                 auto DrawOneWheel = [&](Model& m, int physIdx, float angle) {
                     Matrix matScale = MatrixScale(1.0f, 1.0f, 1.0f);
                     Matrix matTrans = MatrixTranslate(wheels[physIdx].position.x,
@@ -490,10 +515,14 @@ int main() {
                                                       wheels[physIdx].position.z);
                     Matrix matRot   = MatrixMultiply(MatrixRotateX(visualWheelRot),
                                                      MatrixRotateY(angle));
-                    float  carAngle = atan2(carForward.x, carForward.z);
-                    Matrix matBody  = MatrixRotateY(carAngle);
+                    
+                    // FIX: Construct actual 3D orientation matrix using car's local axes
+                    Matrix matBody = { 0 };
+                    matBody.m0 = carRight.x;   matBody.m1 = carRight.y;   matBody.m2 = carRight.z;   matBody.m3 = 0.0f;
+                    matBody.m4 = carUp.x;      matBody.m5 = carUp.y;      matBody.m6 = carUp.z;      matBody.m7 = 0.0f;
+                    matBody.m8 = carForward.x; matBody.m9 = carForward.y; matBody.m10= carForward.z; matBody.m11= 0.0f;
+                    matBody.m12= 0.0f;         matBody.m13= 0.0f;         matBody.m14= 0.0f;         matBody.m15= 1.0f;
 
-                    // EXACT matrix order from working git version
                     m.transform = MatrixMultiply(matScale,
                                   MatrixMultiply(matRot,
                                   MatrixMultiply(matBody, matTrans)));
