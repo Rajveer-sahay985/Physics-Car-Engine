@@ -241,11 +241,30 @@ int main() {
     std::vector<VisualVertex> carSkin;
     std::vector<int>          carIndices;
 
-    Vector3 spawnPoint = {0.0f, 3.0f, 5.0f};
+
+
+   Vector3 spawnPoint = {0.0f, 3.0f, 5.0f};
     LoadPhysicsCage("cage.obj", cageParticles, allSprings, 180.0f, spawnPoint);
     LoadWheelsAndSuspension("wheels.obj", wheels, cageParticles, allSprings, spawnPoint);
     LoadVisualSkin("Car.obj", carSkin, carIndices, spawnPoint);
     BindSkinToCage(carSkin, cageParticles);
+
+    // NOW build the anchor map — wheels and cageParticles are populated
+    int wheelAnchor[4];
+    Vector3 wheelLocalOffset[4];
+    for (int wi = 0; wi < 4 && wi < (int)wheels.size(); wi++) {
+        float bestDist = 999999.f;
+        int   bestIdx  = 0;
+        for (int ci = 0; ci < (int)cageParticles.size(); ci++) {
+            float d = Distance(wheels[wi].position, cageParticles[ci].position);
+            if (d < bestDist) { bestDist = d; bestIdx = ci; }
+        }
+        wheelAnchor[wi] = bestIdx;
+        wheelLocalOffset[wi] = Subtract(wheels[wi].position,
+                                        cageParticles[bestIdx].position);
+    }
+
+
 
     Model wheelModels[4];
     wheelModels[0]=LoadModel("wheel_fl.obj"); wheelModels[1]=LoadModel("wheel_fr.obj");
@@ -378,8 +397,11 @@ int main() {
                 // REVERTED: Removed the heavy friction drag, back to original bounce
                 if (p.position.y < 0.2f) {
                     p.position.y = 0.2f;
-                    p.previous_position.y = p.position.y +
-                        (p.position.y - p.previous_position.y) * 0.3f;
+                    Vector3 vel = Subtract(p.position, p.previous_position);
+                    if (vel.y < 0) vel.y *= -0.04f;  // 4% restitution — dead metal thud
+                    vel.x *= 0.995f;
+                    vel.z *= 0.995f;
+                    p.previous_position = Subtract(p.position, vel);
                 }
                 
                 HandleObstacleCollision(p, pillar);
@@ -410,6 +432,9 @@ int main() {
             if (wheels.size() == 4) {
                 for (int wIdx=0; wIdx<4; wIdx++) {
                     UpdateParticle(wheels[wIdx], subDt);
+                    // Lock wheel XZ to its cage anchor — only Y is free (suspension travel)
+                    Vector3 anchor = cageParticles[wheelAnchor[wIdx]].position;
+
                     HandleObstacleCollision(wheels[wIdx], pillar);
 
                     bool onBump = false;
