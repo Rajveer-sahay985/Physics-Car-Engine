@@ -70,10 +70,14 @@ void UpdateParticle(Particle& p, float dt) {
 }
 
 void ApplyTireFriction(Particle& wheel, Vector3 heading, float grip) {
-    Vector3 vel      = Subtract(wheel.position, wheel.previous_position);
-    Vector3 fwdVel   = Scale(heading, Dot(vel, heading));
-    Vector3 latVel   = Scale(Subtract(vel, fwdVel), 1.0f - grip);
-    wheel.previous_position = Subtract(wheel.position, Add(fwdVel, latVel));
+    Vector3 vel    = Subtract(wheel.position, wheel.previous_position);
+    Vector3 fwdVel = Scale(heading, Dot(vel, heading));
+    Vector3 latVel = Subtract(vel, fwdVel);
+    // Squaring (1-grip) makes lateral scrub much more aggressive.
+    // grip=0.75 → retain only 6.25% of sideways velocity instead of 25%.
+    float latRetain = (1.0f - grip) * (1.0f - grip);
+    wheel.previous_position = Subtract(wheel.position,
+                                       Add(fwdVel, Scale(latVel, latRetain)));
 }
 
 void ApplySpringForce(Spring& spring, float dt) {
@@ -482,15 +486,6 @@ int main() {
                         wheels[wIdx].previous_position.y = wheels[wIdx].position.y;
                     }
 
-                    // Bump stop — cap wheel Y relative to its own spawn position
-                    if (wheels[wIdx].position.y > wheelLocalOffset[wIdx].y + spawnPoint.y - 0.1f) {
-                        wheels[wIdx].position.y = wheelLocalOffset[wIdx].y + spawnPoint.y - 0.1f;
-                        Vector3 vel = Subtract(wheels[wIdx].position, wheels[wIdx].previous_position);
-                        if (vel.y > 0) vel.y = 0.0f;
-                        wheels[wIdx].previous_position = Subtract(wheels[wIdx].position, vel);
-                    }
-                                        
-
                     // REVERTED: Back to All-Wheel Drive (AWD) for original speed and turning
                     bool isGrounded = onBump || (wheels[wIdx].position.y <= wheelRadius + 0.15f);
                     
@@ -514,10 +509,12 @@ int main() {
             }
         }
 
-        // Wheel spin — from working git version
+        // Wheel spin — averaged across all 4 wheels for stable, ground-synced rotation
         if (wheels.size() == 4) {
-            float sd = Dot(Subtract(wheels[rl].position, wheelStartPos[rl]), carForward);
-            visualWheelRot += sd / wheelRadius;
+            float totalSpeed = 0.0f;
+            for (int i = 0; i < 4; i++)
+                totalSpeed += Dot(Subtract(wheels[i].position, wheelStartPos[i]), carForward);
+            visualWheelRot += (totalSpeed * 0.25f) / wheelRadius;
         }
 
         for (auto& vv : carSkin) {
