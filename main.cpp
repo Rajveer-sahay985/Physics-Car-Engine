@@ -122,12 +122,17 @@ void HandleObstacleCollision(Particle& p, const Obstacle& obs) {
     float dZ1 = std::abs(obs.maxBounds.z - p.position.z);
     float mn   = std::min({dX0, dX1, dY0, dY1, dZ0, dZ1});
 
-    if      (mn == dX0) { p.position.x = obs.minBounds.x; p.previous_position.x = p.position.x; }
-    else if (mn == dX1) { p.position.x = obs.maxBounds.x; p.previous_position.x = p.position.x; }
-    else if (mn == dY0) { p.position.y = obs.minBounds.y; p.previous_position.y = p.position.y; }
-    else if (mn == dY1) { p.position.y = obs.maxBounds.y; p.previous_position.y = p.position.y; }
-    else if (mn == dZ0) { p.position.z = obs.minBounds.z; p.previous_position.z = p.position.z; }
-    else                { p.position.z = obs.maxBounds.z; p.previous_position.z = p.position.z; }
+    // Get velocity before zeroing position
+    Vector3 vel = Subtract(p.position, p.previous_position);
+
+    if      (mn == dX0) { p.position.x = obs.minBounds.x; vel.x *= -0.03f; vel.y *= 0.4f; vel.z *= 0.4f; }
+    else if (mn == dX1) { p.position.x = obs.maxBounds.x; vel.x *= -0.03f; vel.y *= 0.4f; vel.z *= 0.4f; }
+    else if (mn == dY0) { p.position.y = obs.minBounds.y; vel.y *= -0.03f; vel.x *= 0.4f; vel.z *= 0.4f; }
+    else if (mn == dY1) { p.position.y = obs.maxBounds.y; vel.y *= -0.03f; vel.x *= 0.4f; vel.z *= 0.4f; }
+    else if (mn == dZ0) { p.position.z = obs.minBounds.z; vel.z *= -0.03f; vel.x *= 0.4f; vel.y *= 0.4f; }
+    else                { p.position.z = obs.maxBounds.z; vel.z *= -0.03f; vel.x *= 0.4f; vel.y *= 0.4f; }
+
+    p.previous_position = Subtract(p.position, vel);
 }
 
 void CreateSpring(std::vector<Spring>& springs, Particle& p1, Particle& p2,
