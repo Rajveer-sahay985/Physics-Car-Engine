@@ -317,9 +317,9 @@ int main() {
                 for (int wIdx=0; wIdx<4; wIdx++) {
                     UpdateParticle(wheels[wIdx], subDt);
                     HandleObstacleCollision(wheels[wIdx], pillar);
-                    HandleObstacleCollision(wheels[wIdx], floor);
 
-                    if (wheels[wIdx].position.y <= wheelRadius) {
+
+                    if (wheels[wIdx].position.y <= wheelRadius + 0.1f) {
                         wheels[wIdx].position.y = wheelRadius;
                         wheels[wIdx].previous_position.y = wheels[wIdx].position.y;
 
