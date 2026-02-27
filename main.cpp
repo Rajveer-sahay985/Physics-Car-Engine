@@ -357,7 +357,7 @@ int main() {
         }
     }
 
-    float gravity=-15, wheelRadius=0.4f, maxEnginePower=20000;
+    float gravity=-15, wheelRadius=0.4f, maxEnginePower=200000;
     float currentGas=0, currentSteering=0, visualWheelRot=0;
     float camYaw=0, camPitch=4.8f, camDist=8;
     DisableCursor();
