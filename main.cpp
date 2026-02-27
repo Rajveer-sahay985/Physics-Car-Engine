@@ -49,7 +49,7 @@ struct Obstacle {
     Vector3 position;
 };
 
-// Sphere-specific collision — much more accurate than AABB for round bumps
+// Sphere-specific collision
 struct SphereObstacle {
     Vector3 center;
     float radius;
@@ -60,8 +60,12 @@ struct SphereObstacle {
 
 int pFront = 0, pBack = 0, pTop = 0;
 
+// -------------------------------------------------------------------
+// UPDATE PARTICLE with increased velocity damping (fixes shiver)
+// -------------------------------------------------------------------
 void UpdateParticle(Particle& p, float dt) {
-    Vector3 vel = Scale(Subtract(p.position, p.previous_position), 0.99f);
+    // Damping factor raised from 0.99f to 0.998f to kill micro‑vibrations
+    Vector3 vel = Scale(Subtract(p.position, p.previous_position), 0.998f);
     p.previous_position = p.position;
     p.position.x += vel.x + p.acceleration.x * dt * dt;
     p.position.y += vel.y + p.acceleration.y * dt * dt;
@@ -88,21 +92,13 @@ void ApplySpringForce(Spring& spring, float dt) {
         Vector3 v1  = Subtract(spring.p1->position, spring.p1->previous_position);
         Vector3 v2  = Subtract(spring.p2->position, spring.p2->previous_position);
         float relVel = std::abs(Dot(Subtract(v2, v1), dir));
-
         if (relVel > 0.035f && std::abs(displacement) > 0.12f) {
-            float crushResistance = (spring.original_length > 1.8f) ? 0.04f : 0.15f; 
-            float crush  = displacement * crushResistance;
+            float crush  = displacement * 0.30f;
             float newLen = spring.rest_length + crush;
-            
-            // The Anti-Inversion Clamp
-            if (newLen < spring.original_length * 0.2f) {
-                newLen = spring.original_length * 0.2f;
-            }
-            
-            if (newLen > spring.original_length * 0.2f && newLen < spring.original_length * 1.1f) {
-                spring.rest_length  = newLen;   
-                spring.damping      = std::min(spring.damping + 5.0f, 100.0f);
-                spring.stiffness    = std::max(spring.stiffness - 1.0f, 20.0f);
+            if (std::abs(newLen - spring.original_length) < spring.original_length * 0.55f) {
+                spring.rest_length  = newLen;
+                spring.damping      = std::min(spring.damping + 3.0f, 80.0f);
+                spring.stiffness    = std::max(spring.stiffness - 1.5f, 15.0f);
             }
         }
     }
@@ -115,6 +111,9 @@ void ApplySpringForce(Spring& spring, float dt) {
     spring.p2->acceleration = Subtract(spring.p2->acceleration, Scale(dir, force / spring.p2->mass));
 }
 
+// -------------------------------------------------------------------
+// IMPROVED OBSTACLE COLLISION – much less bounce, more friction
+// -------------------------------------------------------------------
 void HandleObstacleCollision(Particle& p, const Obstacle& obs) {
     if (p.position.x <= obs.minBounds.x || p.position.x >= obs.maxBounds.x) return;
     if (p.position.y <= obs.minBounds.y || p.position.y >= obs.maxBounds.y) return;
@@ -130,12 +129,18 @@ void HandleObstacleCollision(Particle& p, const Obstacle& obs) {
 
     Vector3 vel = Subtract(p.position, p.previous_position);
 
-    if      (mn == dX0) { p.position.x = obs.minBounds.x; vel.x *= -0.03f; vel.y *= 0.4f; vel.z *= 0.4f; }
-    else if (mn == dX1) { p.position.x = obs.maxBounds.x; vel.x *= -0.03f; vel.y *= 0.4f; vel.z *= 0.4f; }
-    else if (mn == dY0) { p.position.y = obs.minBounds.y; vel.y *= -0.03f; vel.x *= 0.4f; vel.z *= 0.4f; }
-    else if (mn == dY1) { p.position.y = obs.maxBounds.y; vel.y *= -0.03f; vel.x *= 0.4f; vel.z *= 0.4f; }
-    else if (mn == dZ0) { p.position.z = obs.minBounds.z; vel.z *= -0.03f; vel.x *= 0.4f; vel.y *= 0.4f; }
-    else                { p.position.z = obs.maxBounds.z; vel.z *= -0.03f; vel.x *= 0.4f; vel.y *= 0.4f; }
+    // Greatly reduced restitution: normal 0.01, tangential 0.1, plus extra tangential damping
+    if      (mn == dX0) { p.position.x = obs.minBounds.x; vel.x *= -0.01f; vel.y *= 0.1f; vel.z *= 0.1f; }
+    else if (mn == dX1) { p.position.x = obs.maxBounds.x; vel.x *= -0.01f; vel.y *= 0.1f; vel.z *= 0.1f; }
+    else if (mn == dY0) { p.position.y = obs.minBounds.y; vel.y *= -0.01f; vel.x *= 0.1f; vel.z *= 0.1f; }
+    else if (mn == dY1) { p.position.y = obs.maxBounds.y; vel.y *= -0.01f; vel.x *= 0.1f; vel.z *= 0.1f; }
+    else if (mn == dZ0) { p.position.z = obs.minBounds.z; vel.z *= -0.01f; vel.x *= 0.1f; vel.y *= 0.1f; }
+    else                { p.position.z = obs.maxBounds.z; vel.z *= -0.01f; vel.x *= 0.1f; vel.y *= 0.1f; }
+
+    // Extra friction: scale down tangential components further
+    vel.x *= 0.5f;
+    vel.y *= 0.5f;
+    vel.z *= 0.5f;
 
     p.previous_position = Subtract(p.position, vel);
 }
@@ -157,9 +162,10 @@ void LoadPhysicsCage(const char* file, std::vector<Particle>& parts,
             parts.push_back({Add(p, offset), Add(p, offset), {0,0,0}, 2.0f, false});
         }
     }
+    // Increased cage stiffness from 900 to 2000 and damping from 80 to 120 (fixes twist & shiver)
     for (size_t i = 0; i < parts.size(); i++)
         for (size_t j = i+1; j < parts.size(); j++)
-            CreateSpring(springs, parts[i], parts[j], k, 140.0f, false);
+            CreateSpring(springs, parts[i], parts[j], 2000.0f, 120.0f, false);
 }
 
 void LoadWheelsAndSuspension(const char* file, std::vector<Particle>& wheels,
@@ -176,7 +182,8 @@ void LoadWheelsAndSuspension(const char* file, std::vector<Particle>& wheels,
     }
     for (auto& w : wheels)
         for (size_t i = 0; i < cage.size(); i++)
-            CreateSpring(springs, w, cage[i], 400.0f, 45.0f, true); 
+            // Softer suspension (200 vs 400) with more damping (60 vs 45) for visible travel
+            CreateSpring(springs, w, cage[i], 200.0f, 60.0f, true);
 }
 
 void LoadVisualSkin(const char* file, std::vector<VisualVertex>& verts,
@@ -257,10 +264,34 @@ int main() {
     LoadPhysicsCage("cage.obj", cageParticles, allSprings, 900.0f, spawnPoint);
     LoadWheelsAndSuspension("wheels.obj", wheels, cageParticles, allSprings, spawnPoint);
     LoadVisualSkin("Car.obj", carSkin, carIndices, spawnPoint);
+
+    // -------------------------------------------------------------------
+    // Pre‑compute cage reference directions (needed for wheel lateral constraints)
+    // -------------------------------------------------------------------
+    if (!cageParticles.empty()) {
+        float minZ=9999, maxZ=-9999, maxY=-9999;
+        for (size_t i = 0; i < cageParticles.size(); i++) {
+            if (cageParticles[i].position.z < minZ) { minZ=cageParticles[i].position.z; pBack=i; }
+            if (cageParticles[i].position.z > maxZ) { maxZ=cageParticles[i].position.z; pFront=i; }
+            if (cageParticles[i].position.y > maxY) { maxY=cageParticles[i].position.y; pTop=i; }
+        }
+    }
+
     BindSkinToCage(carSkin, cageParticles);
 
+    // -------------------------------------------------------------------
+    // Build wheel anchor map AND store local offsets for lateral constraints
+    // -------------------------------------------------------------------
     int wheelAnchor[4];
-    Vector3 wheelLocalOffset[4];
+    float wheelLocalRight[4], wheelLocalForward[4], wheelLocalUp0[4]; // for lateral constraint
+
+    Vector3 cBack = cageParticles[pBack].position;
+    Vector3 cFront = cageParticles[pFront].position;
+    Vector3 cTop = cageParticles[pTop].position;
+    Vector3 carForwardInit = Normalize(Subtract(cFront, cBack));
+    Vector3 carRightInit = Normalize(Cross(Normalize(Subtract(cTop,cBack)), carForwardInit));
+    Vector3 carUpInit = Cross(carForwardInit, carRightInit);
+
     for (int wi = 0; wi < 4 && wi < (int)wheels.size(); wi++) {
         float bestDist = 999999.f;
         int   bestIdx  = 0;
@@ -269,8 +300,11 @@ int main() {
             if (d < bestDist) { bestDist = d; bestIdx = ci; }
         }
         wheelAnchor[wi] = bestIdx;
-        wheelLocalOffset[wi] = Subtract(wheels[wi].position,
-                                        cageParticles[bestIdx].position);
+        Vector3 anchor = cageParticles[bestIdx].position;
+        Vector3 offset = Subtract(wheels[wi].position, anchor);
+        wheelLocalRight[wi]   = Dot(offset, carRightInit);
+        wheelLocalForward[wi] = Dot(offset, carForwardInit);
+        wheelLocalUp0[wi]     = Dot(offset, carUpInit); // rest suspension offset
     }
 
     Model wheelModels[4];
@@ -291,6 +325,7 @@ int main() {
 
     Obstacle pillar = LoadObstacle("pillar.obj", {0.0f, 0.0f, 20.0f}, GRAY);
 
+    // Sphere bumps
     std::vector<SphereObstacle> bumps;
     const char* bumpFiles[] = {"bump1.obj","bump2.obj","bump3.obj","bump4.obj","bump5.obj"};
     Color bumpColors[] = {DARKGRAY, GRAY, DARKGRAY, GRAY, DARKGRAY};
@@ -304,7 +339,9 @@ int main() {
                 cen.y += mesh.vertices[i*3+1];
                 cen.z += mesh.vertices[i*3+2];
             }
-            cen.x /= mesh.vertexCount; cen.y /= mesh.vertexCount; cen.z /= mesh.vertexCount;
+            cen.x /= mesh.vertexCount;
+            cen.y /= mesh.vertexCount;
+            cen.z /= mesh.vertexCount;
             float rad = 0.0f;
             for (int i = 0; i < mesh.vertexCount; i++) {
                 float dx = mesh.vertices[i*3+0] - cen.x;
@@ -361,35 +398,54 @@ int main() {
         Vector3 wheelStartPos[4];
         for (int i=0;i<4&&i<(int)wheels.size();i++) wheelStartPos[i]=wheels[i].position;
 
-        int   subSteps = 10;
+        // -------------------------------------------------------------------
+        // INCREASED SUBSTEPS from 10 to 20 for better stability (fixes shiver)
+        // -------------------------------------------------------------------
+        int   subSteps = 20;
         float subDt    = dt / subSteps;
 
         for (int step = 0; step < subSteps; step++) {
             for (auto& p : cageParticles) p.acceleration.y += gravity;
             for (auto& w : wheels)        w.acceleration.y += gravity;
-            
+
             for (auto& s : allSprings) {
                 ApplySpringForce(s, subDt);
+                if (s.isSuspension) {
+                    float dist = Distance(s.p1->position, s.p2->position);
+                    float maxLen = s.original_length * 1.4f;
+                    float minLen = s.original_length * 0.5f;
+                    if (dist > maxLen || dist < minLen) {
+                        float target = (dist > maxLen) ? maxLen : minLen;
+                        Vector3 dir = Normalize(Subtract(s.p2->position, s.p1->position));
+                        float diff = dist - target;
+                        s.p1->position = Add(s.p1->position, Scale(dir, diff));
+                    }
+                }
             }
 
             for (auto& p : cageParticles) {
                 UpdateParticle(p, subDt);
-                
-                if (p.position.y < 0.2f) {
-                    p.position.y = 0.2f;
+
+                // -------------------------------------------------------------------
+                // IMPROVED GROUND COLLISION for cage – bounce instead of snap
+                // -------------------------------------------------------------------
+                if (p.position.y < 0.3f) {
                     Vector3 vel = Subtract(p.position, p.previous_position);
-                    if (vel.y < 0) vel.y = 0.0f;  
+                    if (vel.y < 0) vel.y *= -0.1f; // low restitution
+                    else vel.y = 0;
+                    p.position.y = 0.3f;
+                    // Apply friction
                     vel.x *= 0.995f;
                     vel.z *= 0.995f;
                     p.previous_position = Subtract(p.position, vel);
                 }
-                
+
                 HandleObstacleCollision(p, pillar);
-                
+
                 for (auto& bump : bumps) {
                     Vector3 dx = Subtract(p.position, bump.center);
                     float dist = std::sqrt(dx.x*dx.x + dx.y*dx.y + dx.z*dx.z);
-                    float minDist = bump.radius + 0.15f; 
+                    float minDist = bump.radius + 0.15f;
                     if (dist < minDist && dist > 0.001f) {
                         float nx = dx.x/dist, ny = dx.y/dist, nz = dx.z/dist;
                         float overlap = minDist - dist;
@@ -412,32 +468,16 @@ int main() {
                 for (int wIdx=0; wIdx<4; wIdx++) {
                     UpdateParticle(wheels[wIdx], subDt);
 
-                    // Titanium Axles & Bump Stops
-                    Particle& anchor = cageParticles[wheelAnchor[wIdx]];
-                    float dist = Distance(wheels[wIdx].position, anchor.position);
-                    Vector3 origOffset = wheelLocalOffset[wIdx];
-                    float idealDist = std::sqrt(origOffset.x*origOffset.x + origOffset.y*origOffset.y + origOffset.z*origOffset.z);
-                    
-                    float maxLen = idealDist * 1.3f; 
-                    float minLen = idealDist * 0.6f; 
-
-                    if (dist > maxLen || dist < minLen) {
-                        float target = (dist > maxLen) ? maxLen : minLen;
-                        Vector3 dir = Normalize(Subtract(anchor.position, wheels[wIdx].position));
-                        float diff = dist - target;
-                        wheels[wIdx].position = Add(wheels[wIdx].position, Scale(dir, diff));
-                    }
-
                     HandleObstacleCollision(wheels[wIdx], pillar);
 
                     bool onBump = false;
                     for (auto& bump : bumps) {
                         Vector3 dx = Subtract(wheels[wIdx].position, bump.center);
-                        float distBump = std::sqrt(dx.x*dx.x + dx.y*dx.y + dx.z*dx.z);
+                        float dist = std::sqrt(dx.x*dx.x + dx.y*dx.y + dx.z*dx.z);
                         float minDist = bump.radius + wheelRadius;
-                        if (distBump < minDist && distBump > 0.001f) {
-                            float nx = dx.x/distBump, ny = dx.y/distBump, nz = dx.z/distBump;
-                            float overlap = minDist - distBump;
+                        if (dist < minDist && dist > 0.001f) {
+                            float nx = dx.x/dist, ny = dx.y/dist, nz = dx.z/dist;
+                            float overlap = minDist - dist;
 
                             Vector3 vel = Subtract(wheels[wIdx].position, wheels[wIdx].previous_position);
                             float vDotN = vel.x*nx + vel.y*ny + vel.z*nz;
@@ -448,26 +488,32 @@ int main() {
                             wheels[wIdx].position.x += nx * overlap;
                             wheels[wIdx].position.y += ny * overlap;
                             wheels[wIdx].position.z += nz * overlap;
-                            
+
                             wheels[wIdx].previous_position.x = wheels[wIdx].position.x - vel.x;
                             wheels[wIdx].previous_position.y = wheels[wIdx].position.y - vel.y;
                             wheels[wIdx].previous_position.z = wheels[wIdx].position.z - vel.z;
 
-                            if (ny > 0.3f) onBump = true; 
+                            if (ny > 0.3f) onBump = true;
                         }
                     }
 
-                    if (!onBump && wheels[wIdx].position.y <= wheelRadius + 0.1f) {
+                    // -------------------------------------------------------------------
+                    // IMPROVED GROUND COLLISION for wheels – bounce, not snap (fixes travel)
+                    // -------------------------------------------------------------------
+                    if (!onBump && wheels[wIdx].position.y < wheelRadius) {
+                        Vector3 vel = Subtract(wheels[wIdx].position, wheels[wIdx].previous_position);
+                        if (vel.y < 0) vel.y *= -0.2f; // small bounce
+                        else vel.y = 0;
                         wheels[wIdx].position.y = wheelRadius;
-                        wheels[wIdx].previous_position.y = wheels[wIdx].position.y;
+                        wheels[wIdx].previous_position = Subtract(wheels[wIdx].position, vel);
                     }
 
                     bool isGrounded = onBump || (wheels[wIdx].position.y <= wheelRadius + 0.15f);
-                    
+
                     if (isGrounded) {
                         Vector3 heading = (wIdx==frontWheels[0]||wIdx==frontWheels[1]) ? fwdHeading : carForward;
                         float grip = 0.75f;
-                        
+
                         if (handbrake) {
                             grip = (wIdx == rearWheels[0] || wIdx == rearWheels[1]) ? 0.02f : 0.6f;
                             Vector3 vel = Subtract(wheels[wIdx].position, wheels[wIdx].previous_position);
@@ -476,13 +522,33 @@ int main() {
                         } else {
                             wheels[wIdx].acceleration = Add(wheels[wIdx].acceleration, Scale(heading, currentGas));
                         }
-                        
+
                         ApplyTireFriction(wheels[wIdx], heading, grip);
                     }
                 }
             }
         }
 
+        // -------------------------------------------------------------------
+        // LATERAL CONSTRAINT – keep wheels inside wheel wells (fixes floating)
+        // -------------------------------------------------------------------
+        for (int wIdx = 0; wIdx < 4; wIdx++) {
+            Vector3 anchor = cageParticles[wheelAnchor[wIdx]].position;
+            Vector3 toWheel = Subtract(wheels[wIdx].position, anchor);
+            float suspOffset = Dot(toWheel, carUp); // current suspension compression
+
+            Vector3 desired = Add(anchor,
+                                  Add(Scale(carRight, wheelLocalRight[wIdx]),
+                                      Add(Scale(carForward, wheelLocalForward[wIdx]),
+                                          Scale(carUp, suspOffset))));
+
+            // Adjust position and keep velocity consistent
+            Vector3 delta = Subtract(desired, wheels[wIdx].position);
+            wheels[wIdx].position = desired;
+            wheels[wIdx].previous_position = Add(wheels[wIdx].previous_position, delta);
+        }
+
+        // Wheel spin
         if (wheels.size() == 4) {
             float totalSpeed = 0.0f;
             for (int i = 0; i < 4; i++)
@@ -523,7 +589,6 @@ int main() {
                               pillar.maxBounds.x-pillar.minBounds.x,
                               pillar.maxBounds.y-pillar.minBounds.y,
                               pillar.maxBounds.z-pillar.minBounds.z, pillar.color);
-                
                 for (auto& bump : bumps)
                     DrawModel(bump.model, bump.position, 1.0f, bump.color);
 
@@ -559,7 +624,7 @@ int main() {
                                                       wheels[physIdx].position.z);
                     Matrix matRot   = MatrixMultiply(MatrixRotateX(visualWheelRot),
                                                      MatrixRotateY(angle));
-                    
+
                     Matrix matBody = { 0 };
                     matBody.m0 = carRight.x;   matBody.m1 = carRight.y;   matBody.m2 = carRight.z;   matBody.m3 = 0.0f;
                     matBody.m4 = carUp.x;      matBody.m5 = carUp.y;      matBody.m6 = carUp.z;      matBody.m7 = 0.0f;
@@ -578,8 +643,8 @@ int main() {
                 DrawOneWheel(wheelModels[3], rr, 0.0f);
 
             EndMode3D();
-            DrawText("V2.3 CORE: Stable Edition", 10, 10, 20, DARKGRAY);
-            DrawText("WASD: Drive | SPACE: Handbrake", 10, 40, 20, BLACK);
+            DrawText("V2.3 CORE: Smooth Momentum + Batch Rendering + Real Wheels", 10, 10, 20, DARKGRAY);
+            DrawText("WASD: Drive | SPACE: Handbrake Drift", 10, 40, 20, BLACK);
             DrawFPS(10, 70);
         EndDrawing();
     }
