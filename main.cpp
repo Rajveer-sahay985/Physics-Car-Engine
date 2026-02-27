@@ -36,10 +36,12 @@ struct Spring {
     float rest_length, original_length, stiffness, damping;
     bool isSuspension;
 };
+// NEW: Multi‑point skin binding (fixes spoiler)
 struct VisualVertex {
     Vector3 position;
-    int boundParticleIndex;
-    Vector3 offset;
+    int boundIndices[3];
+    float weights[3];
+    Vector3 localCoords[3];
 };
 struct Obstacle {
     Vector3 minBounds, maxBounds;
@@ -48,8 +50,6 @@ struct Obstacle {
     bool hasModel;
     Vector3 position;
 };
-
-// Sphere-specific collision
 struct SphereObstacle {
     Vector3 center;
     float radius;
@@ -60,12 +60,9 @@ struct SphereObstacle {
 
 int pFront = 0, pBack = 0, pTop = 0;
 
-// -------------------------------------------------------------------
-// UPDATE PARTICLE with increased velocity damping (fixes shiver)
-// -------------------------------------------------------------------
 void UpdateParticle(Particle& p, float dt) {
-    // Damping factor raised from 0.99f to 0.998f to kill micro‑vibrations
-    Vector3 vel = Scale(Subtract(p.position, p.previous_position), 0.998f);
+    // Slightly increased damping to kill micro‑vibrations
+    Vector3 vel = Scale(Subtract(p.position, p.previous_position), 0.999f);
     p.previous_position = p.position;
     p.position.x += vel.x + p.acceleration.x * dt * dt;
     p.position.y += vel.y + p.acceleration.y * dt * dt;
@@ -88,20 +85,21 @@ void ApplySpringForce(Spring& spring, float dt) {
     Vector3 dir = Normalize(Subtract(spring.p2->position, spring.p1->position));
     float displacement = dist - spring.rest_length;
 
-    if (!spring.isSuspension) {
-        Vector3 v1  = Subtract(spring.p1->position, spring.p1->previous_position);
-        Vector3 v2  = Subtract(spring.p2->position, spring.p2->previous_position);
-        float relVel = std::abs(Dot(Subtract(v2, v1), dir));
-        if (relVel > 0.035f && std::abs(displacement) > 0.12f) {
-            float crush  = displacement * 0.30f;
-            float newLen = spring.rest_length + crush;
-            if (std::abs(newLen - spring.original_length) < spring.original_length * 0.55f) {
-                spring.rest_length  = newLen;
-                spring.damping      = std::min(spring.damping + 3.0f, 80.0f);
-                spring.stiffness    = std::max(spring.stiffness - 1.5f, 15.0f);
-            }
-        }
-    }
+    // PERMANENT DEFORMATION DISABLED – prevents front bumper collapse
+    // if (!spring.isSuspension) {
+    //     Vector3 v1  = Subtract(spring.p1->position, spring.p1->previous_position);
+    //     Vector3 v2  = Subtract(spring.p2->position, spring.p2->previous_position);
+    //     float relVel = std::abs(Dot(Subtract(v2, v1), dir));
+    //     if (relVel > 0.035f && std::abs(displacement) > 0.12f) {
+    //         float crush  = displacement * 0.30f;
+    //         float newLen = spring.rest_length + crush;
+    //         if (std::abs(newLen - spring.original_length) < spring.original_length * 0.55f) {
+    //             spring.rest_length  = newLen;
+    //             spring.damping      = std::min(spring.damping + 3.0f, 80.0f);
+    //             spring.stiffness    = std::max(spring.stiffness - 1.5f, 15.0f);
+    //         }
+    //     }
+    // }
 
     Vector3 v1 = Subtract(spring.p1->position, spring.p1->previous_position);
     Vector3 v2 = Subtract(spring.p2->position, spring.p2->previous_position);
@@ -111,9 +109,6 @@ void ApplySpringForce(Spring& spring, float dt) {
     spring.p2->acceleration = Subtract(spring.p2->acceleration, Scale(dir, force / spring.p2->mass));
 }
 
-// -------------------------------------------------------------------
-// IMPROVED OBSTACLE COLLISION – much less bounce, more friction
-// -------------------------------------------------------------------
 void HandleObstacleCollision(Particle& p, const Obstacle& obs) {
     if (p.position.x <= obs.minBounds.x || p.position.x >= obs.maxBounds.x) return;
     if (p.position.y <= obs.minBounds.y || p.position.y >= obs.maxBounds.y) return;
@@ -129,7 +124,6 @@ void HandleObstacleCollision(Particle& p, const Obstacle& obs) {
 
     Vector3 vel = Subtract(p.position, p.previous_position);
 
-    // Greatly reduced restitution: normal 0.01, tangential 0.1, plus extra tangential damping
     if      (mn == dX0) { p.position.x = obs.minBounds.x; vel.x *= -0.01f; vel.y *= 0.1f; vel.z *= 0.1f; }
     else if (mn == dX1) { p.position.x = obs.maxBounds.x; vel.x *= -0.01f; vel.y *= 0.1f; vel.z *= 0.1f; }
     else if (mn == dY0) { p.position.y = obs.minBounds.y; vel.y *= -0.01f; vel.x *= 0.1f; vel.z *= 0.1f; }
@@ -137,11 +131,7 @@ void HandleObstacleCollision(Particle& p, const Obstacle& obs) {
     else if (mn == dZ0) { p.position.z = obs.minBounds.z; vel.z *= -0.01f; vel.x *= 0.1f; vel.y *= 0.1f; }
     else                { p.position.z = obs.maxBounds.z; vel.z *= -0.01f; vel.x *= 0.1f; vel.y *= 0.1f; }
 
-    // Extra friction: scale down tangential components further
-    vel.x *= 0.5f;
-    vel.y *= 0.5f;
-    vel.z *= 0.5f;
-
+    vel.x *= 0.5f; vel.y *= 0.5f; vel.z *= 0.5f;
     p.previous_position = Subtract(p.position, vel);
 }
 
@@ -162,7 +152,7 @@ void LoadPhysicsCage(const char* file, std::vector<Particle>& parts,
             parts.push_back({Add(p, offset), Add(p, offset), {0,0,0}, 2.0f, false});
         }
     }
-    // Increased cage stiffness from 900 to 2000 and damping from 80 to 120 (fixes twist & shiver)
+    // Increased cage stiffness & damping (fixes twist & shiver)
     for (size_t i = 0; i < parts.size(); i++)
         for (size_t j = i+1; j < parts.size(); j++)
             CreateSpring(springs, parts[i], parts[j], 2000.0f, 120.0f, false);
@@ -182,10 +172,10 @@ void LoadWheelsAndSuspension(const char* file, std::vector<Particle>& wheels,
     }
     for (auto& w : wheels)
         for (size_t i = 0; i < cage.size(); i++)
-            // Softer suspension (200 vs 400) with more damping (60 vs 45) for visible travel
             CreateSpring(springs, w, cage[i], 200.0f, 60.0f, true);
 }
 
+// NEW: Properly initialize VisualVertex
 void LoadVisualSkin(const char* file, std::vector<VisualVertex>& verts,
                     std::vector<int>& idx, Vector3 offset) {
     std::ifstream f(file); if (!f.is_open()) return;
@@ -194,7 +184,15 @@ void LoadVisualSkin(const char* file, std::vector<VisualVertex>& verts,
         std::istringstream iss(line); std::string pre; iss >> pre;
         if (pre == "v") {
             Vector3 p; iss >> p.x >> p.y >> p.z;
-            verts.push_back({Add(p, offset), 0, {0,0,0}});
+            Vector3 pos = Add(p, offset);
+            VisualVertex vv;
+            vv.position = pos;
+            for (int i=0; i<3; i++) {
+                vv.boundIndices[i] = 0;
+                vv.weights[i] = 0.0f;
+                vv.localCoords[i] = {0,0,0};
+            }
+            verts.push_back(vv);
         } else if (pre == "f") {
             for (int i = 0; i < 3; i++) {
                 std::string vd; iss >> vd;
@@ -205,8 +203,10 @@ void LoadVisualSkin(const char* file, std::vector<VisualVertex>& verts,
     }
 }
 
+// NEW: Multi‑point skin binding (fixes spoiler detachment)
 void BindSkinToCage(std::vector<VisualVertex>& verts, const std::vector<Particle>& parts) {
     if (parts.empty()) return;
+
     float minZ=9999, maxZ=-9999, maxY=-9999;
     for (size_t i = 0; i < parts.size(); i++) {
         if (parts[i].position.z < minZ) { minZ=parts[i].position.z; pBack=i; }
@@ -217,15 +217,29 @@ void BindSkinToCage(std::vector<VisualVertex>& verts, const std::vector<Particle
     Vector3 tup = Normalize(Subtract(parts[pTop].position,  parts[pBack].position));
     Vector3 rgt = Normalize(Cross(tup, fwd));
     Vector3 up  = Cross(fwd, rgt);
+
     for (auto& vv : verts) {
-        float md=999999; int ci=0;
+        std::vector<std::pair<float,int>> distIdx;
         for (size_t i=0; i<parts.size(); i++) {
-            float d=Distance(vv.position, parts[i].position);
-            if (d < md) { md=d; ci=i; }
+            float d = Distance(vv.position, parts[i].position);
+            distIdx.push_back({d, i});
         }
-        vv.boundParticleIndex = ci;
-        Vector3 g = Subtract(vv.position, parts[ci].position);
-        vv.offset = {Dot(g,rgt), Dot(g,up), Dot(g,fwd)};
+        std::sort(distIdx.begin(), distIdx.end());
+
+        float totalInvDist = 0.0f;
+        for (int j=0; j<3; j++) {
+            float invDist = 1.0f / (distIdx[j].first + 0.0001f);
+            totalInvDist += invDist;
+            vv.boundIndices[j] = distIdx[j].second;
+            vv.weights[j] = invDist;
+        }
+        for (int j=0; j<3; j++) vv.weights[j] /= totalInvDist;
+
+        for (int j=0; j<3; j++) {
+            int idx = vv.boundIndices[j];
+            Vector3 g = Subtract(vv.position, parts[idx].position);
+            vv.localCoords[j] = { Dot(g, rgt), Dot(g, up), Dot(g, fwd) };
+        }
     }
 }
 
@@ -264,33 +278,18 @@ int main() {
     LoadPhysicsCage("cage.obj", cageParticles, allSprings, 900.0f, spawnPoint);
     LoadWheelsAndSuspension("wheels.obj", wheels, cageParticles, allSprings, spawnPoint);
     LoadVisualSkin("Car.obj", carSkin, carIndices, spawnPoint);
-
-    // -------------------------------------------------------------------
-    // Pre‑compute cage reference directions (needed for wheel lateral constraints)
-    // -------------------------------------------------------------------
-    if (!cageParticles.empty()) {
-        float minZ=9999, maxZ=-9999, maxY=-9999;
-        for (size_t i = 0; i < cageParticles.size(); i++) {
-            if (cageParticles[i].position.z < minZ) { minZ=cageParticles[i].position.z; pBack=i; }
-            if (cageParticles[i].position.z > maxZ) { maxZ=cageParticles[i].position.z; pFront=i; }
-            if (cageParticles[i].position.y > maxY) { maxY=cageParticles[i].position.y; pTop=i; }
-        }
-    }
-
     BindSkinToCage(carSkin, cageParticles);
 
-    // -------------------------------------------------------------------
-    // Build wheel anchor map AND store local offsets for lateral constraints
-    // -------------------------------------------------------------------
+    // Lateral constraint data (same as your working version)
     int wheelAnchor[4];
-    float wheelLocalRight[4], wheelLocalForward[4], wheelLocalUp0[4]; // for lateral constraint
+    float wheelLocalRight[4], wheelLocalForward[4], wheelLocalUp0[4];
 
-    Vector3 cBack = cageParticles[pBack].position;
-    Vector3 cFront = cageParticles[pFront].position;
-    Vector3 cTop = cageParticles[pTop].position;
+    Vector3 cBack      = cageParticles[pBack].position;
+    Vector3 cFront     = cageParticles[pFront].position;
+    Vector3 cTop       = cageParticles[pTop].position;
     Vector3 carForwardInit = Normalize(Subtract(cFront, cBack));
-    Vector3 carRightInit = Normalize(Cross(Normalize(Subtract(cTop,cBack)), carForwardInit));
-    Vector3 carUpInit = Cross(carForwardInit, carRightInit);
+    Vector3 carRightInit   = Normalize(Cross(Normalize(Subtract(cTop,cBack)), carForwardInit));
+    Vector3 carUpInit      = Cross(carForwardInit, carRightInit);
 
     for (int wi = 0; wi < 4 && wi < (int)wheels.size(); wi++) {
         float bestDist = 999999.f;
@@ -304,7 +303,7 @@ int main() {
         Vector3 offset = Subtract(wheels[wi].position, anchor);
         wheelLocalRight[wi]   = Dot(offset, carRightInit);
         wheelLocalForward[wi] = Dot(offset, carForwardInit);
-        wheelLocalUp0[wi]     = Dot(offset, carUpInit); // rest suspension offset
+        wheelLocalUp0[wi]     = Dot(offset, carUpInit);
     }
 
     Model wheelModels[4];
@@ -325,7 +324,6 @@ int main() {
 
     Obstacle pillar = LoadObstacle("pillar.obj", {0.0f, 0.0f, 20.0f}, GRAY);
 
-    // Sphere bumps
     std::vector<SphereObstacle> bumps;
     const char* bumpFiles[] = {"bump1.obj","bump2.obj","bump3.obj","bump4.obj","bump5.obj"};
     Color bumpColors[] = {DARKGRAY, GRAY, DARKGRAY, GRAY, DARKGRAY};
@@ -357,9 +355,12 @@ int main() {
         }
     }
 
-    float gravity=-15, wheelRadius=0.4f, maxEnginePower=200000;
-    float currentGas=0, currentSteering=0, visualWheelRot=0;
-    float camYaw=0, camPitch=4.8f, camDist=8;
+    // Restore working gravity and engine power from your stable version
+    float gravity = -15.0f;
+    float wheelRadius = 0.4f;
+    float maxEnginePower = 20000.0f;  // original high value
+    float currentGas = 0, currentSteering = 0, visualWheelRot = 0;
+    float camYaw = 0, camPitch = 4.8f, camDist = 8;
     DisableCursor();
 
     while (!WindowShouldClose()) {
@@ -381,15 +382,15 @@ int main() {
         Vector3 carUp      = Cross(carForward, carRight);
 
         bool handbrake = IsKeyDown(KEY_SPACE);
-        float tGas=0;
-        if (IsKeyDown(KEY_W)) tGas= maxEnginePower;
-        if (IsKeyDown(KEY_S)) tGas=-maxEnginePower;
-        if (handbrake) tGas=0;
+        float tGas = 0;
+        if (IsKeyDown(KEY_W)) tGas = maxEnginePower;
+        if (IsKeyDown(KEY_S)) tGas = -maxEnginePower;
+        if (handbrake) tGas = 0;
         currentGas += (tGas - currentGas) * 1.5f * dt;
 
-        float tSteer=0;
-        if (IsKeyDown(KEY_A)) tSteer=-0.6f;
-        if (IsKeyDown(KEY_D)) tSteer= 0.6f;
+        float tSteer = 0;
+        if (IsKeyDown(KEY_A)) tSteer = -0.6f;
+        if (IsKeyDown(KEY_D)) tSteer = 0.6f;
         currentSteering += (tSteer - currentSteering) * 5.0f * dt;
 
         Vector3 fwdHeading = Add(Scale(carForward, std::cos(currentSteering)),
@@ -398,11 +399,8 @@ int main() {
         Vector3 wheelStartPos[4];
         for (int i=0;i<4&&i<(int)wheels.size();i++) wheelStartPos[i]=wheels[i].position;
 
-        // -------------------------------------------------------------------
-        // INCREASED SUBSTEPS from 10 to 20 for better stability (fixes shiver)
-        // -------------------------------------------------------------------
-        int   subSteps = 20;
-        float subDt    = dt / subSteps;
+        int subSteps = 20;
+        float subDt = dt / subSteps;
 
         for (int step = 0; step < subSteps; step++) {
             for (auto& p : cageParticles) p.acceleration.y += gravity;
@@ -426,15 +424,11 @@ int main() {
             for (auto& p : cageParticles) {
                 UpdateParticle(p, subDt);
 
-                // -------------------------------------------------------------------
-                // IMPROVED GROUND COLLISION for cage – bounce instead of snap
-                // -------------------------------------------------------------------
                 if (p.position.y < 0.3f) {
                     Vector3 vel = Subtract(p.position, p.previous_position);
-                    if (vel.y < 0) vel.y *= -0.1f; // low restitution
+                    if (vel.y < 0) vel.y *= -0.1f;
                     else vel.y = 0;
                     p.position.y = 0.3f;
-                    // Apply friction
                     vel.x *= 0.995f;
                     vel.z *= 0.995f;
                     p.previous_position = Subtract(p.position, vel);
@@ -497,12 +491,9 @@ int main() {
                         }
                     }
 
-                    // -------------------------------------------------------------------
-                    // IMPROVED GROUND COLLISION for wheels – bounce, not snap (fixes travel)
-                    // -------------------------------------------------------------------
                     if (!onBump && wheels[wIdx].position.y < wheelRadius) {
                         Vector3 vel = Subtract(wheels[wIdx].position, wheels[wIdx].previous_position);
-                        if (vel.y < 0) vel.y *= -0.2f; // small bounce
+                        if (vel.y < 0) vel.y *= -0.2f;
                         else vel.y = 0;
                         wheels[wIdx].position.y = wheelRadius;
                         wheels[wIdx].previous_position = Subtract(wheels[wIdx].position, vel);
@@ -529,26 +520,22 @@ int main() {
             }
         }
 
-        // -------------------------------------------------------------------
-        // LATERAL CONSTRAINT – keep wheels inside wheel wells (fixes floating)
-        // -------------------------------------------------------------------
+        // Lateral constraint
         for (int wIdx = 0; wIdx < 4; wIdx++) {
             Vector3 anchor = cageParticles[wheelAnchor[wIdx]].position;
             Vector3 toWheel = Subtract(wheels[wIdx].position, anchor);
-            float suspOffset = Dot(toWheel, carUp); // current suspension compression
+            float suspOffset = Dot(toWheel, carUp);
 
             Vector3 desired = Add(anchor,
                                   Add(Scale(carRight, wheelLocalRight[wIdx]),
                                       Add(Scale(carForward, wheelLocalForward[wIdx]),
                                           Scale(carUp, suspOffset))));
 
-            // Adjust position and keep velocity consistent
             Vector3 delta = Subtract(desired, wheels[wIdx].position);
             wheels[wIdx].position = desired;
             wheels[wIdx].previous_position = Add(wheels[wIdx].previous_position, delta);
         }
 
-        // Wheel spin
         if (wheels.size() == 4) {
             float totalSpeed = 0.0f;
             for (int i = 0; i < 4; i++)
@@ -556,11 +543,17 @@ int main() {
             visualWheelRot += (totalSpeed * 0.25f) / wheelRadius;
         }
 
+        // Multi‑point skin update
         for (auto& vv : carSkin) {
-            vv.position = Add(cageParticles[vv.boundParticleIndex].position,
-                Add(Add(Scale(carRight, vv.offset.x),
-                        Scale(carUp,    vv.offset.y)),
-                        Scale(carForward,vv.offset.z)));
+            Vector3 newPos = {0,0,0};
+            for (int j=0; j<3; j++) {
+                int idx = vv.boundIndices[j];
+                Vector3 offset = Add(Add(Scale(carRight, vv.localCoords[j].x),
+                                         Scale(carUp,    vv.localCoords[j].y)),
+                                     Scale(carForward, vv.localCoords[j].z));
+                newPos = Add(newPos, Scale(Add(cageParticles[idx].position, offset), vv.weights[j]));
+            }
+            vv.position = newPos;
         }
 
         if (!cageParticles.empty()) {
@@ -643,7 +636,7 @@ int main() {
                 DrawOneWheel(wheelModels[3], rr, 0.0f);
 
             EndMode3D();
-            DrawText("V2.3 CORE: Smooth Momentum + Batch Rendering + Real Wheels", 10, 10, 20, DARKGRAY);
+            DrawText("V2.7 FINAL: Stable gravity + Multi‑point skin + No collapse", 10, 10, 20, DARKGRAY);
             DrawText("WASD: Drive | SPACE: Handbrake Drift", 10, 40, 20, BLACK);
             DrawFPS(10, 70);
         EndDrawing();
